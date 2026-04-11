@@ -261,13 +261,10 @@ func ReadAll(ctx context.Context, buffer []byte, masterClient *wdclient.MasterCl
 
 	for x := chunkViews.Front(); x != nil; x = x.Next {
 		chunkView := x.Value
-		urlStrings, err := lookupFileIdFn(ctx, chunkView.FileId)
-		if err != nil {
-			glog.V(1).InfofCtx(ctx, "operation LookupFileId %s failed, err: %v", chunkView.FileId, err)
-			return err
-		}
-
-		n, err := util_http.RetriedFetchChunkData(ctx, buffer[idx:idx+int(chunkView.ViewSize)], urlStrings, chunkView.CipherKey, chunkView.IsGzipped, chunkView.IsFullChunk(), chunkView.OffsetInChunk, chunkView.FileId)
+		n, err := ReadChunkWithReLookup(ctx, masterClient, chunkView.FileId,
+			func(urls []string) (int, error) {
+				return util_http.RetriedFetchChunkData(ctx, buffer[idx:idx+int(chunkView.ViewSize)], urls, chunkView.CipherKey, chunkView.IsGzipped, chunkView.IsFullChunk(), chunkView.OffsetInChunk, chunkView.FileId)
+			})
 		if err != nil {
 			return err
 		}
