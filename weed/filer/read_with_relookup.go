@@ -26,9 +26,36 @@ func ReadChunkWithReLookup(
 	fileId string,
 	fetchFn func(urlStrings []string) (written int, err error),
 ) (int, error) {
-	urls, err := masterClient.GetLookupFileIdFunction()(ctx, fileId)
+	lookupFn := masterClient.GetLookupFileIdFunction()
+	urls, err := lookupFn(ctx, fileId)
 	if err != nil {
 		return 0, err
 	}
-	return fetchFn(urls)
+
+	written, fetchErr := fetchFn(urls)
+	if fetchErr == nil {
+		return written, nil
+	}
+
+	inv, ok := masterClient.(CacheInvalidator)
+	if !ok {
+		return written, fetchErr
+	}
+
+	inv.InvalidateCache(fileId)
+
+	// Partial-write failures: cache invalidated for next reader, but
+	// we cannot replay into the caller's writer.
+	if written > 0 {
+		return written, fetchErr
+	}
+
+	newUrls, lookupErr := lookupFn(ctx, fileId)
+	if lookupErr != nil {
+		return 0, fetchErr
+	}
+	if urlSlicesEqual(urls, newUrls) {
+		return 0, fetchErr
+	}
+	return fetchFn(newUrls)
 }
