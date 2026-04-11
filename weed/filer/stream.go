@@ -188,43 +188,16 @@ func PrepareStreamContentWithThrottler(ctx context.Context, masterClient wdclien
 				}
 				offset = chunkView.ViewOffset
 			}
-			urlStrings := fileId2Url[chunkView.FileId]
 			start := time.Now()
 			jwt := jwtFunc(chunkView.FileId)
-			written, err := retriedStreamFetchChunkData(ctx, writer, urlStrings, jwt, chunkView.CipherKey, chunkView.IsGzipped, chunkView.IsFullChunk(), chunkView.OffsetInChunk, int(chunkView.ViewSize))
+			_, err := ReadChunkWithReLookup(ctx, masterClient, chunkView.FileId,
+				func(urls []string) (int, error) {
+					n, e := retriedStreamFetchChunkData(ctx, writer, urls, jwt, chunkView.CipherKey, chunkView.IsGzipped, chunkView.IsFullChunk(), chunkView.OffsetInChunk, int(chunkView.ViewSize))
+					return int(n), e
+				})
 
 			if err != nil && ctx.Err() != nil {
 				return ctx.Err()
-			}
-
-			// If read failed, try to invalidate cache and re-lookup
-			if err != nil && written == 0 {
-				if invalidator, ok := masterClient.(CacheInvalidator); ok {
-					glog.V(0).InfofCtx(ctx, "read chunk %s failed, invalidating cache and retrying", chunkView.FileId)
-					invalidator.InvalidateCache(chunkView.FileId)
-
-					// Re-lookup
-					newUrlStrings, lookupErr := masterClient.GetLookupFileIdFunction()(ctx, chunkView.FileId)
-					if lookupErr == nil && len(newUrlStrings) > 0 {
-						// Check if new URLs are different from old ones to avoid infinite retry
-						if !urlSlicesEqual(urlStrings, newUrlStrings) {
-							glog.V(0).InfofCtx(ctx, "retrying read chunk %s with new locations: %v", chunkView.FileId, newUrlStrings)
-							_, err = retriedStreamFetchChunkData(ctx, writer, newUrlStrings, jwt, chunkView.CipherKey, chunkView.IsGzipped, chunkView.IsFullChunk(), chunkView.OffsetInChunk, int(chunkView.ViewSize))
-							// Update the map so subsequent references use fresh URLs
-							if err == nil {
-								fileId2Url[chunkView.FileId] = newUrlStrings
-							}
-						} else {
-							glog.V(0).InfofCtx(ctx, "re-lookup returned same locations for chunk %s, skipping retry", chunkView.FileId)
-						}
-					} else {
-						if lookupErr != nil {
-							glog.WarningfCtx(ctx, "failed to re-lookup chunk %s after cache invalidation: %v", chunkView.FileId, lookupErr)
-						} else {
-							glog.WarningfCtx(ctx, "re-lookup for chunk %s returned no locations, skipping retry", chunkView.FileId)
-						}
-					}
-				}
 			}
 
 			offset += int64(chunkView.ViewSize)
