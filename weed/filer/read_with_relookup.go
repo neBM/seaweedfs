@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/seaweedfs/seaweedfs/weed/stats"
 	"github.com/seaweedfs/seaweedfs/weed/wdclient"
 )
 
@@ -47,6 +48,7 @@ func ReadChunkWithReLookup(
 
 	inv, ok := masterClient.(CacheInvalidator)
 	if !ok {
+		stats.FilerVidMapRelookupCounter.WithLabelValues("no_invalidator").Inc()
 		return written, fetchErr
 	}
 
@@ -55,15 +57,24 @@ func ReadChunkWithReLookup(
 	// Partial-write failures: cache invalidated for next reader, but
 	// we cannot replay into the caller's writer.
 	if written > 0 {
+		stats.FilerVidMapRelookupCounter.WithLabelValues("partial_write").Inc()
 		return written, fetchErr
 	}
 
 	newUrls, lookupErr := lookupFn(ctx, fileId)
 	if lookupErr != nil {
+		stats.FilerVidMapRelookupCounter.WithLabelValues("lookup_failed").Inc()
 		return 0, fetchErr
 	}
 	if urlSlicesEqual(urls, newUrls) {
+		stats.FilerVidMapRelookupCounter.WithLabelValues("same_urls").Inc()
 		return 0, fetchErr
 	}
-	return fetchFn(newUrls)
+	retryWritten, retryErr := fetchFn(newUrls)
+	if retryErr == nil {
+		stats.FilerVidMapRelookupCounter.WithLabelValues("success").Inc()
+	} else {
+		stats.FilerVidMapRelookupCounter.WithLabelValues("retry_failed").Inc()
+	}
+	return retryWritten, retryErr
 }

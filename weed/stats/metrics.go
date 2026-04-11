@@ -191,6 +191,14 @@ var (
 			Help:      "The last send timestamp of the filer subscription.",
 		}, []string{"sourceFiler", "clientName", "path"})
 
+	FilerVidMapRelookupCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: Namespace,
+			Subsystem: "filer",
+			Name:      "vidmap_relookups_total",
+			Help:      "Count of vidMap re-lookup attempts after read failure, labeled by outcome.",
+		}, []string{"result"})
+
 	FilerStoreCounter = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: Namespace,
@@ -487,6 +495,7 @@ func init() {
 	Gather.MustRegister(FilerInFlightRequestsGauge)
 	Gather.MustRegister(FilerInFlightUploadBytesGauge)
 	Gather.MustRegister(FilerInFlightUploadCountGauge)
+	Gather.MustRegister(FilerVidMapRelookupCounter)
 	Gather.MustRegister(FilerStoreCounter)
 	Gather.MustRegister(FilerStoreHistogram)
 	Gather.MustRegister(FilerSyncOffsetGauge)
