@@ -2,6 +2,7 @@ package filer
 
 import (
 	"context"
+	"errors"
 
 	"github.com/seaweedfs/seaweedfs/weed/wdclient"
 )
@@ -35,6 +36,13 @@ func ReadChunkWithReLookup(
 	written, fetchErr := fetchFn(urls)
 	if fetchErr == nil {
 		return written, nil
+	}
+
+	// Context cancellation is never a stale-vidMap signal. Bail out
+	// before invalidation or re-lookup so we don't spam master with
+	// queries on cancelled requests.
+	if errors.Is(fetchErr, context.Canceled) || errors.Is(fetchErr, context.DeadlineExceeded) {
+		return written, fetchErr
 	}
 
 	inv, ok := masterClient.(CacheInvalidator)

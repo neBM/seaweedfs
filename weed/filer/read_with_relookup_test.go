@@ -189,3 +189,54 @@ func TestReadChunkWithReLookup_NonInvalidator(t *testing.T) {
 		t.Errorf("fetchCalls = %d, want 1 (no retry without invalidator)", fetchCalls)
 	}
 }
+
+func TestReadChunkWithReLookup_PartialWrite(t *testing.T) {
+	mc := &stubMasterClient{
+		lookups: []stubLookupResult{
+			{urls: []string{"http://stale:8080"}},
+			{urls: []string{"http://fresh:8080"}}, // should NOT be consulted
+		},
+	}
+	fetchErr := errors.New("read failed mid-chunk")
+	var fetchCalls int
+	written, err := ReadChunkWithReLookup(context.Background(), mc, "1,abc",
+		func(urls []string) (int, error) {
+			fetchCalls++
+			return 512, fetchErr // partial write
+		})
+	if !errors.Is(err, fetchErr) {
+		t.Errorf("expected original fetch error, got %v", err)
+	}
+	if written != 512 {
+		t.Errorf("written = %d, want 512", written)
+	}
+	if fetchCalls != 1 {
+		t.Errorf("fetchCalls = %d, want 1 (no retry after partial write)", fetchCalls)
+	}
+	if atomic.LoadInt32(&mc.invalidateCalls) != 1 {
+		t.Errorf("invalidateCalls = %d, want 1 (still invalidate for next reader)", mc.invalidateCalls)
+	}
+	if atomic.LoadInt32(&mc.lookupCalls) != 1 {
+		t.Errorf("lookupCalls = %d, want 1 (no re-lookup after partial write)", mc.lookupCalls)
+	}
+}
+
+func TestReadChunkWithReLookup_ContextCanceled(t *testing.T) {
+	mc := &stubMasterClient{
+		lookups: []stubLookupResult{
+			{urls: []string{"http://alive:8080"}},
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled when fetchFn runs
+	_, err := ReadChunkWithReLookup(ctx, mc, "1,abc",
+		func(urls []string) (int, error) {
+			return 0, ctx.Err()
+		})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+	if atomic.LoadInt32(&mc.invalidateCalls) != 0 {
+		t.Errorf("invalidateCalls = %d, want 0 (ctx cancellation must not trigger invalidation)", mc.invalidateCalls)
+	}
+}
