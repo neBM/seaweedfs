@@ -17,6 +17,7 @@ import (
 type ReaderCache struct {
 	chunkCache     chunk_cache.ChunkCache
 	lookupFileIdFn wdclient.LookupFileIdFunctionType
+	masterClient   wdclient.HasLookupFileIdFunction
 	sync.Mutex
 	downloaders map[string]*SingleChunkCacher
 	limit       int
@@ -45,6 +46,13 @@ func NewReaderCache(limit int, chunkCache chunk_cache.ChunkCache, lookupFileIdFn
 		lookupFileIdFn: lookupFileIdFn,
 		downloaders:    make(map[string]*SingleChunkCacher),
 	}
+}
+
+// SetMasterClient wires an optional master client for vidMap invalidation
+// and re-lookup on stale volume-server URLs. Safe to call after construction;
+// tests that never call this get rc.masterClient == nil and use the fallback path.
+func (rc *ReaderCache) SetMasterClient(mc wdclient.HasLookupFileIdFunction) {
+	rc.masterClient = mc
 }
 
 // MaybeCache prefetches up to 'count' chunks ahead in parallel.

@@ -88,7 +88,7 @@ func ResolveOneChunkManifest(ctx context.Context, lookupFileIdFn wdclient.Lookup
 	bytesBuffer := bytesBufferPool.Get().(*bytes.Buffer)
 	bytesBuffer.Reset()
 	defer bytesBufferPool.Put(bytesBuffer)
-	err := fetchWholeChunk(ctx, bytesBuffer, lookupFileIdFn, chunk.GetFileIdString(), chunk.CipherKey, chunk.IsCompressed)
+	err := fetchWholeChunk(ctx, bytesBuffer, lookupFileIdFn, nil, chunk.GetFileIdString(), chunk.CipherKey, chunk.IsCompressed)
 	if err != nil {
 		return nil, fmt.Errorf("fail to read manifest %s: %v", chunk.GetFileIdString(), err)
 	}
@@ -103,7 +103,15 @@ func ResolveOneChunkManifest(ctx context.Context, lookupFileIdFn wdclient.Lookup
 }
 
 // TODO fetch from cache for weed mount?
-func fetchWholeChunk(ctx context.Context, bytesBuffer *bytes.Buffer, lookupFileIdFn wdclient.LookupFileIdFunctionType, fileId string, cipherKey []byte, isGzipped bool) error {
+func fetchWholeChunk(ctx context.Context, bytesBuffer *bytes.Buffer, lookupFileIdFn wdclient.LookupFileIdFunctionType, masterClient wdclient.HasLookupFileIdFunction, fileId string, cipherKey []byte, isGzipped bool) error {
+	if masterClient != nil {
+		jwt := JwtForVolumeServer(fileId)
+		_, err := ReadChunkWithReLookup(ctx, masterClient, fileId, func(urlStrings []string) (int, error) {
+			n, e := retriedStreamFetchChunkData(ctx, bytesBuffer, urlStrings, jwt, cipherKey, isGzipped, true, 0, 0)
+			return int(n), e
+		})
+		return err
+	}
 	urlStrings, err := lookupFileIdFn(ctx, fileId)
 	if err != nil {
 		glog.ErrorfCtx(ctx, "operation LookupFileId %s failed, err: %v", fileId, err)
@@ -117,7 +125,12 @@ func fetchWholeChunk(ctx context.Context, bytesBuffer *bytes.Buffer, lookupFileI
 	return nil
 }
 
-func fetchChunkRange(ctx context.Context, buffer []byte, lookupFileIdFn wdclient.LookupFileIdFunctionType, fileId string, cipherKey []byte, isGzipped bool, offset int64) (int, error) {
+func fetchChunkRange(ctx context.Context, buffer []byte, lookupFileIdFn wdclient.LookupFileIdFunctionType, masterClient wdclient.HasLookupFileIdFunction, fileId string, cipherKey []byte, isGzipped bool, offset int64) (int, error) {
+	if masterClient != nil {
+		return ReadChunkWithReLookup(ctx, masterClient, fileId, func(urlStrings []string) (int, error) {
+			return util_http.RetriedFetchChunkData(ctx, buffer, urlStrings, cipherKey, isGzipped, false, offset, fileId)
+		})
+	}
 	urlStrings, err := lookupFileIdFn(ctx, fileId)
 	if err != nil {
 		glog.ErrorfCtx(ctx, "operation LookupFileId %s failed, err: %v", fileId, err)
