@@ -3,6 +3,7 @@ package filer
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -238,5 +239,35 @@ func TestReadChunkWithReLookup_ContextCanceled(t *testing.T) {
 	}
 	if atomic.LoadInt32(&mc.invalidateCalls) != 0 {
 		t.Errorf("invalidateCalls = %d, want 0 (ctx cancellation must not trigger invalidation)", mc.invalidateCalls)
+	}
+}
+
+func TestReadChunkWithReLookup_ConcurrentInvalidation(t *testing.T) {
+	mc := &stubMasterClient{
+		lookups: []stubLookupResult{
+			{urls: []string{"http://stale:8080"}},
+			{urls: []string{"http://fresh:8080"}},
+		},
+	}
+	var wg sync.WaitGroup
+	const goroutines = 16
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			_, _ = ReadChunkWithReLookup(context.Background(), mc, "1,abc",
+				func(urls []string) (int, error) {
+					if len(urls) > 0 && urls[0] == "http://stale:8080" {
+						return 0, errors.New("stale")
+					}
+					return 1, nil
+				})
+		}()
+	}
+	wg.Wait()
+	// Invariant: at least one invalidate happened. Over-counting is
+	// acceptable (documented in spec).
+	if atomic.LoadInt32(&mc.invalidateCalls) < 1 {
+		t.Errorf("invalidateCalls = %d, want >= 1", mc.invalidateCalls)
 	}
 }
