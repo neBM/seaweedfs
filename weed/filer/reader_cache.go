@@ -199,19 +199,31 @@ func (s *SingleChunkCacher) startCaching() {
 	// cancelled, it would abort the download and cause errors for all other waiting readers.
 	// The download should always complete once started to serve all potential consumers.
 
-	// Lookup file ID without holding the lock
-	urlStrings, err := s.parent.lookupFileIdFn(context.Background(), s.chunkFileId)
-	if err != nil {
-		s.Lock()
-		s.err = fmt.Errorf("operation LookupFileId %s failed, err: %v", s.chunkFileId, err)
-		s.Unlock()
-		return
-	}
-
-	// Allocate buffer and download without holding the lock
-	// This allows multiple downloads to proceed in parallel
+	// Allocate buffer and download without holding the lock.
+	// This allows multiple downloads to proceed in parallel.
 	data := mem.Allocate(s.chunkSize)
-	_, fetchErr := util_http.RetriedFetchChunkData(context.Background(), data, urlStrings, s.cipherKey, s.isGzipped, true, 0, s.chunkFileId)
+	var fetchErr error
+	if s.parent.masterClient != nil {
+		// Preferred path: route through ReadChunkWithReLookup so that a
+		// failed fetch triggers vidMap invalidation + one bounded re-lookup.
+		// This is the mount/CSI read path on rotating volume server IPs.
+		_, fetchErr = ReadChunkWithReLookup(context.Background(), s.parent.masterClient, s.chunkFileId,
+			func(urlStrings []string) (int, error) {
+				return util_http.RetriedFetchChunkData(context.Background(), data, urlStrings, s.cipherKey, s.isGzipped, true, 0, s.chunkFileId)
+			})
+	} else {
+		// Fallback for tests and callers that do not wire a master client:
+		// keep the original lookup-then-fetch path with no invalidation.
+		urlStrings, lookupErr := s.parent.lookupFileIdFn(context.Background(), s.chunkFileId)
+		if lookupErr != nil {
+			mem.Free(data)
+			s.Lock()
+			s.err = fmt.Errorf("operation LookupFileId %s failed, err: %v", s.chunkFileId, lookupErr)
+			s.Unlock()
+			return
+		}
+		_, fetchErr = util_http.RetriedFetchChunkData(context.Background(), data, urlStrings, s.cipherKey, s.isGzipped, true, 0, s.chunkFileId)
+	}
 
 	// Now acquire lock to update state
 	s.Lock()
