@@ -5,11 +5,13 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	util "github.com/seaweedfs/seaweedfs/weed/util"
 	"github.com/spf13/viper"
@@ -136,6 +138,10 @@ func NewHttpClient(clientName ClientName, opts ...HttpClientOpt) (*HTTPClient, e
 	}
 
 	httpClient.Transport = &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   3 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
 		MaxIdleConns:        1024,
 		MaxIdleConnsPerHost: 1024,
 		TLSClientConfig:     tlsConfig,
