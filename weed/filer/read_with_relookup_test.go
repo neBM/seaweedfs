@@ -222,6 +222,59 @@ func TestReadChunkWithReLookup_PartialWrite(t *testing.T) {
 	}
 }
 
+// dialTimeoutErr wraps context.DeadlineExceeded the same way net.Dialer
+// with a Timeout set does: errors.Is(err, context.DeadlineExceeded) is
+// true, but the caller's context is not cancelled. This is exactly the
+// error surfaced by the weed http client after the dial-timeout follow-up
+// shipped in v0.1.11 — without the ctx.Err() check in the helper, this
+// error was (incorrectly) treated as caller cancellation and skipped
+// invalidation, making the whole vidMap-relookup machinery a no-op.
+type dialTimeoutErr struct{}
+
+func (dialTimeoutErr) Error() string { return "dial tcp 10.0.0.1:8080: i/o timeout" }
+func (dialTimeoutErr) Timeout() bool { return true }
+func (dialTimeoutErr) Is(target error) bool {
+	return target == context.DeadlineExceeded
+}
+
+// TestReadChunkWithReLookup_StaleThenFreshOnDialTimeout exercises the
+// dial-timeout regression: a fetch error that satisfies
+// errors.Is(err, context.DeadlineExceeded) must NOT bail early when the
+// caller's context is still alive. The helper has to invalidate + re-lookup
+// and recover against the fresh URL.
+func TestReadChunkWithReLookup_StaleThenFreshOnDialTimeout(t *testing.T) {
+	if !errors.Is(dialTimeoutErr{}, context.DeadlineExceeded) {
+		t.Fatalf("test precondition broken: dialTimeoutErr{} must satisfy errors.Is(context.DeadlineExceeded)")
+	}
+	mc := &stubMasterClient{
+		lookups: []stubLookupResult{
+			{urls: []string{"http://stale:8080"}},
+			{urls: []string{"http://fresh:8080"}},
+		},
+	}
+	var fetchCalls int
+	written, err := ReadChunkWithReLookup(context.Background(), mc, "1,abc",
+		func(urls []string) (int, error) {
+			fetchCalls++
+			if urls[0] == "http://stale:8080" {
+				return 0, dialTimeoutErr{}
+			}
+			return 100, nil
+		})
+	if err != nil {
+		t.Fatalf("expected success after re-lookup, got %v", err)
+	}
+	if written != 100 {
+		t.Errorf("written = %d, want 100", written)
+	}
+	if fetchCalls != 2 {
+		t.Errorf("fetchCalls = %d, want 2", fetchCalls)
+	}
+	if atomic.LoadInt32(&mc.invalidateCalls) != 1 {
+		t.Errorf("invalidateCalls = %d, want 1", mc.invalidateCalls)
+	}
+}
+
 func TestReadChunkWithReLookup_ContextCanceled(t *testing.T) {
 	mc := &stubMasterClient{
 		lookups: []stubLookupResult{

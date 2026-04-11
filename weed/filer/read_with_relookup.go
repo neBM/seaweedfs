@@ -2,7 +2,6 @@ package filer
 
 import (
 	"context"
-	"errors"
 
 	"github.com/seaweedfs/seaweedfs/weed/stats"
 	"github.com/seaweedfs/seaweedfs/weed/wdclient"
@@ -39,10 +38,12 @@ func ReadChunkWithReLookup(
 		return written, nil
 	}
 
-	// Context cancellation is never a stale-vidMap signal. Bail out
-	// before invalidation or re-lookup so we don't spam master with
-	// queries on cancelled requests.
-	if errors.Is(fetchErr, context.Canceled) || errors.Is(fetchErr, context.DeadlineExceeded) {
+	// Only bail if the CALLER's context was cancelled — never on the
+	// fetchErr itself. A Dialer.Timeout firing inside the HTTP transport
+	// surfaces as an error that satisfies errors.Is(err, context.DeadlineExceeded),
+	// but that is our own internal timeout, not caller cancellation, and
+	// it is exactly the signal we want to turn into "invalidate + re-lookup".
+	if ctx.Err() != nil {
 		return written, fetchErr
 	}
 
