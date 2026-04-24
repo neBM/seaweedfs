@@ -112,19 +112,27 @@ func Test_autoRemoveEmptyFoldersEnabled(t *testing.T) {
 		attrValue string
 	}{
 		{
-			name:      "no attrs defaults enabled",
+			name:      "no attrs defaults disabled",
 			attrs:     nil,
-			enabled:   true,
+			enabled:   false,
 			attrValue: "<no_attrs>",
 		},
 		{
-			name:      "missing key defaults enabled",
+			name:      "missing key defaults disabled",
 			attrs:     map[string][]byte{},
-			enabled:   true,
+			enabled:   false,
 			attrValue: "<missing>",
 		},
 		{
-			name: "allow-empty disables cleanup",
+			name: "empty value defaults disabled",
+			attrs: map[string][]byte{
+				s3_constants.ExtAllowEmptyFolders: []byte(""),
+			},
+			enabled:   false,
+			attrValue: "<empty>",
+		},
+		{
+			name: "allow-empty (true) keeps cleanup disabled",
 			attrs: map[string][]byte{
 				s3_constants.ExtAllowEmptyFolders: []byte("true"),
 			},
@@ -132,12 +140,20 @@ func Test_autoRemoveEmptyFoldersEnabled(t *testing.T) {
 			attrValue: "true",
 		},
 		{
-			name: "explicit false keeps cleanup enabled",
+			name: "explicit false opts in to cleanup",
 			attrs: map[string][]byte{
 				s3_constants.ExtAllowEmptyFolders: []byte("false"),
 			},
 			enabled:   true,
 			attrValue: "false",
+		},
+		{
+			name: "unknown value keeps cleanup disabled",
+			attrs: map[string][]byte{
+				s3_constants.ExtAllowEmptyFolders: []byte("yes"),
+			},
+			enabled:   false,
+			attrValue: "yes",
 		},
 	}
 
@@ -668,6 +684,12 @@ func TestEmptyFolderCleaner_processCleanupQueue_drainsAllOnceTriggered(t *testin
 			deleted = append(deleted, string(path))
 			return nil
 		},
+		attrsFn: func(path util.FullPath) (map[string][]byte, error) {
+			if string(path) == "/buckets/test" {
+				return map[string][]byte{s3_constants.ExtAllowEmptyFolders: []byte("false")}, nil
+			}
+			return nil, nil
+		},
 	}
 
 	cleaner := &EmptyFolderCleaner{
@@ -742,6 +764,46 @@ func TestEmptyFolderCleaner_executeCleanup_bucketPolicyDisabledSkips(t *testing.
 	}
 }
 
+func TestEmptyFolderCleaner_executeCleanup_bucketWithoutAttrIsSkipped(t *testing.T) {
+	// Default-off contract: a bucket with no Seaweed-X-Amz-Allow-Empty-Folders
+	// attribute must not have its empty subdirs reaped. Cleanup is opt-in.
+	lockRing := lock_manager.NewLockRing(5 * time.Second)
+	lockRing.SetSnapshot([]pb.ServerAddress{"filer1:8888"}, 0)
+
+	var deleted []string
+	mock := &mockFilerOps{
+		countFn: func(_ util.FullPath) (int, error) {
+			return 0, nil
+		},
+		deleteFn: func(path util.FullPath) error {
+			deleted = append(deleted, string(path))
+			return nil
+		},
+		// attrsFn nil → GetEntryAttributes returns nil, nil for every path
+	}
+
+	cleaner := &EmptyFolderCleaner{
+		filer:          mock,
+		lockRing:       lockRing,
+		host:           "filer1:8888",
+		bucketPath:     "/buckets",
+		enabled:        true,
+		folderCounts:   make(map[string]*folderState),
+		cleanupQueue:   NewCleanupQueue(1000, time.Minute),
+		maxCountCheck:  1000,
+		cacheExpiry:    time.Minute,
+		processorSleep: time.Second,
+		stopCh:         make(chan struct{}),
+	}
+
+	folder := "/buckets/test/folder"
+	cleaner.executeCleanup(folder, "triggered_item")
+
+	if len(deleted) != 0 {
+		t.Fatalf("expected bucket without opt-in attr to skip cleanup, got deletions %v", deleted)
+	}
+}
+
 func TestEmptyFolderCleaner_executeCleanup_directoryMarker(t *testing.T) {
 	testCases := []struct {
 		name           string
@@ -776,6 +838,12 @@ func TestEmptyFolderCleaner_executeCleanup_directoryMarker(t *testing.T) {
 				},
 				isDirKeyObjFn: func(path util.FullPath) (bool, error) {
 					return tc.isDirKeyObj, nil
+				},
+				attrsFn: func(path util.FullPath) (map[string][]byte, error) {
+					if string(path) == "/buckets/test" {
+						return map[string][]byte{s3_constants.ExtAllowEmptyFolders: []byte("false")}, nil
+					}
+					return nil, nil
 				},
 			}
 

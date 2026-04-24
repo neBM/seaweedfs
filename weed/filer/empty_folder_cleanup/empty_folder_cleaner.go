@@ -373,22 +373,33 @@ func (efc *EmptyFolderCleaner) getBucketCleanupPolicy(ctx context.Context, folde
 	return bucketPath, autoRemove, "filer", attrValue, nil
 }
 
+// autoRemoveEmptyFoldersEnabled decides whether the EmptyFolderCleaner should
+// reap empty sub-dirs of a given bucket. Default is OFF: the cleaner only runs
+// when the bucket explicitly opts in via the Seaweed-X-Amz-Allow-Empty-Folders
+// extended attribute set to literal "false". Any other state (no attrs, missing
+// key, empty value, or "true") leaves empty dirs alone. This is safe for POSIX
+// consumers (CSI mounts, gitaly, mail spools, anything relying on persistent
+// empty directories) and keeps S3 buckets that genuinely want empty-folder
+// reaping a single explicit attr away.
 func autoRemoveEmptyFoldersEnabled(attrs map[string][]byte) (bool, string) {
 	if attrs == nil {
-		return true, "<no_attrs>"
+		return false, "<no_attrs>"
 	}
 
 	value, found := attrs[s3_constants.ExtAllowEmptyFolders]
 	if !found {
-		return true, "<missing>"
+		return false, "<missing>"
 	}
 
 	text := strings.TrimSpace(string(value))
 	if text == "" {
-		return true, "<empty>"
+		return false, "<empty>"
 	}
 
-	return !strings.EqualFold(text, "true"), text
+	if strings.EqualFold(text, "false") {
+		return true, text
+	}
+	return false, text
 }
 
 // isUnderPath checks if child is under parent path
