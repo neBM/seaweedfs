@@ -616,3 +616,19 @@ func (t *Topology) SetTopologyId(topologyId string) {
 		glog.Fatalf("Split-brain detected! Current TopologyId is %s, but received %s. Stopping to prevent data corruption.", t.topologyId, topologyId)
 	}
 }
+
+func (t *Topology) SetTopologyIdFromReplay(topologyId, source string) bool {
+	t.topologyIdLock.Lock()
+	defer t.topologyIdLock.Unlock()
+	if topologyId == "" {
+		return false
+	}
+	if t.topologyId == "" {
+		t.topologyId = topologyId
+		return true
+	}
+	if t.topologyId != topologyId {
+		glog.Warningf("ignoring conflicting TopologyId from %s: current=%s received=%s", source, t.topologyId, topologyId)
+	}
+	return false
+}

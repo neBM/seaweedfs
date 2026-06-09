@@ -89,10 +89,9 @@ func (s *StateMachine) Apply(l *hashicorpRaft.Log) interface{} {
 	}
 	s.topo.UpAdjustMaxVolumeId(state.MaxVolumeId)
 	if state.TopologyId != "" {
-		prevTopologyId := s.topo.GetTopologyId()
-		s.topo.SetTopologyId(state.TopologyId)
+		topologyIdInitialized := s.topo.SetTopologyIdFromReplay(state.TopologyId, "raft log")
 		// Log when recovering TopologyId from Raft log replay, or setting it for the first time.
-		if prevTopologyId == "" {
+		if topologyIdInitialized {
 			glog.V(0).Infof("Set TopologyId from raft log: %s", state.TopologyId)
 		}
 	}

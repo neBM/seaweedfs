@@ -32,10 +32,9 @@ func (c *MaxVolumeIdCommand) Apply(server raft.Server) (interface{}, error) {
 	before := topo.GetMaxVolumeId()
 	topo.UpAdjustMaxVolumeId(c.MaxVolumeId)
 	if c.TopologyId != "" {
-		prevTopologyId := topo.GetTopologyId()
-		topo.SetTopologyId(c.TopologyId)
+		topologyIdInitialized := topo.SetTopologyIdFromReplay(c.TopologyId, c.CommandName())
 		// Log when TopologyId is set for the first time, with different messages for leader and follower.
-		if prevTopologyId == "" {
+		if topologyIdInitialized {
 			if server.State() == raft.Leader {
 				glog.V(0).Infof("TopologyId generated and applied on leader: %s", c.TopologyId)
 			} else {
