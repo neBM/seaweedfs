@@ -8,8 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
 	"github.com/seaweedfs/seaweedfs/weed/s3api/s3err"
+	stats_collect "github.com/seaweedfs/seaweedfs/weed/stats"
 	"github.com/stretchr/testify/assert"
 	grpc "google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
@@ -208,6 +210,80 @@ func Test_normalizePrefixMarker(t *testing.T) {
 			assert.Equalf(t, tt.wantAlignedMarker, gotAlignedMarker, "normalizePrefixMarker(%v, %v)", tt.args.prefix, tt.args.marker)
 		})
 	}
+}
+
+func TestS3ListMetricsTrackRecursiveDirectoryReads(t *testing.T) {
+	s3a := &S3ApiServer{}
+	client := &testFilerClient{
+		entriesByDir: map[string][]*filer_pb.Entry{
+			"/buckets/metrics-recursive-test": {
+				{Name: "nested", IsDirectory: true},
+				{Name: "root.txt"},
+			},
+			"/buckets/metrics-recursive-test/nested": {
+				{Name: "child.txt"},
+			},
+		},
+	}
+
+	cursor := &ListingCursor{maxKeys: 10}
+	listMetrics := newS3ListMetrics("metrics-recursive-test", "v2", "")
+	var emitted []string
+	_, err := s3a.doListFilerEntriesTracked(client, "/buckets/metrics-recursive-test", "", cursor, "", "", false, "metrics-recursive-test", listMetrics, 1, func(dir string, entry *filer_pb.Entry) {
+		emitted = append(emitted, dir+"/"+entry.Name)
+	})
+	assert.NoError(t, err)
+
+	assert.EqualValues(t, 2, listMetrics.filerDirectoryReads)
+	assert.EqualValues(t, 2, listMetrics.filesSeen)
+	assert.EqualValues(t, 1, listMetrics.directoriesSeen)
+	assert.Equal(t, 2, listMetrics.maxDepth)
+	assert.ElementsMatch(t, []string{
+		"/buckets/metrics-recursive-test/nested/child.txt",
+		"/buckets/metrics-recursive-test/root.txt",
+	}, emitted)
+
+	listMetrics.finish(ListBucketResult{}, nil)
+	assert.Equal(t, 2.0, testutil.ToFloat64(stats_collect.S3ListFilerDirectoryReadsCounter.WithLabelValues("metrics-recursive-test", "v2", "none")))
+	assert.Equal(t, 2.0, testutil.ToFloat64(stats_collect.S3ListEntriesSeenCounter.WithLabelValues("metrics-recursive-test", "v2", "none", "file")))
+	assert.Equal(t, 1.0, testutil.ToFloat64(stats_collect.S3ListEntriesSeenCounter.WithLabelValues("metrics-recursive-test", "v2", "none", "directory")))
+}
+
+func TestS3ListMetricsTrackDelimitedDirectoryReads(t *testing.T) {
+	s3a := &S3ApiServer{}
+	client := &testFilerClient{
+		entriesByDir: map[string][]*filer_pb.Entry{
+			"/buckets/metrics-delimited-test": {
+				{Name: "nested", IsDirectory: true},
+				{Name: "root.txt"},
+			},
+			"/buckets/metrics-delimited-test/nested": {
+				{Name: "child.txt"},
+			},
+		},
+	}
+
+	cursor := &ListingCursor{maxKeys: 10}
+	listMetrics := newS3ListMetrics("metrics-delimited-test", "v2", "/")
+	var emitted []string
+	_, err := s3a.doListFilerEntriesTracked(client, "/buckets/metrics-delimited-test", "", cursor, "", "/", false, "metrics-delimited-test", listMetrics, 1, func(dir string, entry *filer_pb.Entry) {
+		emitted = append(emitted, dir+"/"+entry.Name)
+	})
+	assert.NoError(t, err)
+
+	assert.EqualValues(t, 1, listMetrics.filerDirectoryReads)
+	assert.EqualValues(t, 1, listMetrics.filesSeen)
+	assert.EqualValues(t, 1, listMetrics.directoriesSeen)
+	assert.Equal(t, 1, listMetrics.maxDepth)
+	assert.ElementsMatch(t, []string{
+		"/buckets/metrics-delimited-test/nested",
+		"/buckets/metrics-delimited-test/root.txt",
+	}, emitted)
+
+	listMetrics.finish(ListBucketResult{}, nil)
+	assert.Equal(t, 1.0, testutil.ToFloat64(stats_collect.S3ListFilerDirectoryReadsCounter.WithLabelValues("metrics-delimited-test", "v2", "slash")))
+	assert.Equal(t, 1.0, testutil.ToFloat64(stats_collect.S3ListEntriesSeenCounter.WithLabelValues("metrics-delimited-test", "v2", "slash", "file")))
+	assert.Equal(t, 1.0, testutil.ToFloat64(stats_collect.S3ListEntriesSeenCounter.WithLabelValues("metrics-delimited-test", "v2", "slash", "directory")))
 }
 
 func TestBuildTruncatedNextMarker(t *testing.T) {

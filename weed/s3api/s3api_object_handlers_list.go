@@ -11,13 +11,17 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/seaweedfs/seaweedfs/weed/glog"
 	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
 	"github.com/seaweedfs/seaweedfs/weed/s3api/s3_constants"
 	"github.com/seaweedfs/seaweedfs/weed/s3api/s3err"
+	stats_collect "github.com/seaweedfs/seaweedfs/weed/stats"
 )
+
+const s3ListHighDirectoryReadThreshold = 1000
 
 type OptionalString struct {
 	string
@@ -109,7 +113,7 @@ func (s3a *S3ApiServer) ListObjectsV2Handler(w http.ResponseWriter, r *http.Requ
 	// Adjust marker if it ends with delimiter to skip all entries with that prefix
 	marker = adjustMarkerForDelimiter(marker, delimiter)
 
-	response, err := s3a.listFilerEntries(bucket, originalPrefix, maxKeys, marker, delimiter, encodingTypeUrl, fetchOwner)
+	response, err := s3a.listFilerEntries("v2", bucket, originalPrefix, maxKeys, marker, delimiter, encodingTypeUrl, fetchOwner)
 
 	if err != nil {
 		s3err.WriteErrorResponse(w, r, s3err.ErrInternalError)
@@ -173,7 +177,7 @@ func (s3a *S3ApiServer) ListObjectsV1Handler(w http.ResponseWriter, r *http.Requ
 	// Adjust marker if it ends with delimiter to skip all entries with that prefix
 	marker = adjustMarkerForDelimiter(marker, delimiter)
 
-	response, err := s3a.listFilerEntries(bucket, originalPrefix, uint16(maxKeys), marker, delimiter, encodingTypeUrl, true)
+	response, err := s3a.listFilerEntries("v1", bucket, originalPrefix, uint16(maxKeys), marker, delimiter, encodingTypeUrl, true)
 
 	if err != nil {
 		s3err.WriteErrorResponse(w, r, s3err.ErrInternalError)
@@ -232,7 +236,12 @@ func sanitizeV1MarkerEcho(response *ListBucketResult, marker string, encodingTyp
 	}
 }
 
-func (s3a *S3ApiServer) listFilerEntries(bucket string, originalPrefix string, maxKeys uint16, originalMarker string, delimiter string, encodingTypeUrl bool, fetchOwner bool) (response ListBucketResult, err error) {
+func (s3a *S3ApiServer) listFilerEntries(api string, bucket string, originalPrefix string, maxKeys uint16, originalMarker string, delimiter string, encodingTypeUrl bool, fetchOwner bool) (response ListBucketResult, err error) {
+	listMetrics := newS3ListMetrics(bucket, api, delimiter)
+	defer func() {
+		listMetrics.finish(response, err)
+	}()
+
 	// convert full path prefix into directory name and prefix for entry name
 	requestDir, prefix, marker := normalizePrefixMarker(originalPrefix, originalMarker)
 	bucketPrefix := s3a.bucketPrefix(bucket)
@@ -288,17 +297,19 @@ func (s3a *S3ApiServer) listFilerEntries(bucket string, originalPrefix string, m
 				} else {
 					contents = append(contents, newEntry)
 					cursor.maxKeys--
+					listMetrics.recordEmittedContent()
 				}
 			} else {
 				contents = append(contents, newEntry)
 				cursor.maxKeys--
+				listMetrics.recordEmittedContent()
 			}
 		}
 
 		for {
 			empty := true
 
-			nextMarker, doErr = s3a.doListFilerEntries(client, reqDir, prefix, cursor, marker, delimiter, false, bucket, func(dir string, entry *filer_pb.Entry) {
+			nextMarker, doErr = s3a.doListFilerEntriesTracked(client, reqDir, prefix, cursor, marker, delimiter, false, bucket, listMetrics, 1, func(dir string, entry *filer_pb.Entry) {
 				empty = false
 				dirName, entryName, _ := entryUrlEncode(dir, entry.Name, encodingTypeUrl)
 				if entry.IsDirectory {
@@ -335,6 +346,7 @@ func (s3a *S3ApiServer) listFilerEntries(bucket string, originalPrefix string, m
 									Prefix: delimitedPrefix,
 								})
 								cursor.maxKeys--
+								listMetrics.recordEmittedCommonPrefix()
 								delimiterFound = true
 								lastEntryWasCommonPrefix = true
 								lastCommonPrefixName = delimitedPath[0]
@@ -364,6 +376,7 @@ func (s3a *S3ApiServer) listFilerEntries(bucket string, originalPrefix string, m
 						})
 						//All of the keys (up to 1,000) rolled up into a common prefix count as a single return when calculating the number of returns.
 						cursor.maxKeys--
+						listMetrics.recordEmittedCommonPrefix()
 						lastEntryWasCommonPrefix = true
 						lastCommonPrefixName = entry.Name
 					}
@@ -395,6 +408,7 @@ func (s3a *S3ApiServer) listFilerEntries(bucket string, originalPrefix string, m
 									Prefix: delimitedPrefix,
 								})
 								cursor.maxKeys--
+								listMetrics.recordEmittedCommonPrefix()
 								delimiterFound = true
 								lastEntryWasCommonPrefix = true
 								lastCommonPrefixName = delimitedPath[0]
@@ -469,6 +483,92 @@ func (s3a *S3ApiServer) listFilerEntries(bucket string, originalPrefix string, m
 	})
 
 	return
+}
+
+type s3ListMetrics struct {
+	bucket              string
+	api                 string
+	delimiter           string
+	start               time.Time
+	filerDirectoryReads uint64
+	filesSeen           uint64
+	directoriesSeen     uint64
+	contentsEmitted     uint64
+	commonPrefixes      uint64
+	maxDepth            int
+}
+
+func newS3ListMetrics(bucket, api, delimiter string) *s3ListMetrics {
+	return &s3ListMetrics{
+		bucket:    bucket,
+		api:       api,
+		delimiter: s3ListDelimiterLabel(delimiter),
+		start:     time.Now(),
+	}
+}
+
+func s3ListDelimiterLabel(delimiter string) string {
+	switch delimiter {
+	case "":
+		return "none"
+	case "/":
+		return "slash"
+	default:
+		return "other"
+	}
+}
+
+func (m *s3ListMetrics) recordDirectoryRead(depth int) {
+	if m == nil {
+		return
+	}
+	m.filerDirectoryReads++
+	if depth > m.maxDepth {
+		m.maxDepth = depth
+	}
+}
+
+func (m *s3ListMetrics) recordEntrySeen(entry *filer_pb.Entry) {
+	if m == nil || entry == nil {
+		return
+	}
+	if entry.IsDirectory {
+		m.directoriesSeen++
+	} else {
+		m.filesSeen++
+	}
+}
+
+func (m *s3ListMetrics) recordEmittedContent() {
+	if m == nil {
+		return
+	}
+	m.contentsEmitted++
+}
+
+func (m *s3ListMetrics) recordEmittedCommonPrefix() {
+	if m == nil {
+		return
+	}
+	m.commonPrefixes++
+}
+
+func (m *s3ListMetrics) finish(response ListBucketResult, err error) {
+	if m == nil {
+		return
+	}
+	stats_collect.S3ListFilerDirectoryReadsCounter.WithLabelValues(m.bucket, m.api, m.delimiter).Add(float64(m.filerDirectoryReads))
+	stats_collect.S3ListEntriesSeenCounter.WithLabelValues(m.bucket, m.api, m.delimiter, "file").Add(float64(m.filesSeen))
+	stats_collect.S3ListEntriesSeenCounter.WithLabelValues(m.bucket, m.api, m.delimiter, "directory").Add(float64(m.directoriesSeen))
+	stats_collect.S3ListEntriesEmittedCounter.WithLabelValues(m.bucket, m.api, m.delimiter, "content").Add(float64(m.contentsEmitted))
+	stats_collect.S3ListEntriesEmittedCounter.WithLabelValues(m.bucket, m.api, m.delimiter, "common_prefix").Add(float64(m.commonPrefixes))
+	stats_collect.S3ListDirectoryReadsPerRequestHistogram.WithLabelValues(m.bucket, m.api, m.delimiter).Observe(float64(m.filerDirectoryReads))
+	stats_collect.S3ListMaxDepthPerRequestHistogram.WithLabelValues(m.bucket, m.api, m.delimiter).Observe(float64(m.maxDepth))
+
+	if m.filerDirectoryReads >= s3ListHighDirectoryReadThreshold {
+		glog.Warningf("s3 list high filer traversal bucket=%q api=%s delimiter=%s directoryReads=%d filesSeen=%d directoriesSeen=%d contentsEmitted=%d commonPrefixesEmitted=%d maxDepth=%d truncated=%t duration=%s err=%v",
+			m.bucket, m.api, m.delimiter, m.filerDirectoryReads, m.filesSeen, m.directoriesSeen, m.contentsEmitted, m.commonPrefixes, m.maxDepth, response.IsTruncated, time.Since(m.start), err)
+	}
 }
 
 type ListingCursor struct {
@@ -558,6 +658,10 @@ func buildTruncatedNextMarker(requestDir, prefix, nextMarker string, lastEntryWa
 }
 
 func (s3a *S3ApiServer) doListFilerEntries(client filer_pb.SeaweedFilerClient, dir, prefix string, cursor *ListingCursor, marker, delimiter string, inclusiveStartFrom bool, bucket string, eachEntryFn func(dir string, entry *filer_pb.Entry)) (nextMarker string, err error) {
+	return s3a.doListFilerEntriesTracked(client, dir, prefix, cursor, marker, delimiter, inclusiveStartFrom, bucket, nil, 1, eachEntryFn)
+}
+
+func (s3a *S3ApiServer) doListFilerEntriesTracked(client filer_pb.SeaweedFilerClient, dir, prefix string, cursor *ListingCursor, marker, delimiter string, inclusiveStartFrom bool, bucket string, listMetrics *s3ListMetrics, depth int, eachEntryFn func(dir string, entry *filer_pb.Entry)) (nextMarker string, err error) {
 	// invariants
 	//   prefix and marker should be under dir, marker may contain "/"
 	//   maxKeys should be updated for each recursion
@@ -571,7 +675,7 @@ func (s3a *S3ApiServer) doListFilerEntries(client filer_pb.SeaweedFilerClient, d
 	if strings.Contains(marker, "/") {
 		subDir, subMarker := toParentAndDescendants(marker)
 		// println("doListFilerEntries dir", dir+"/"+subDir, "subMarker", subMarker)
-		subNextMarker, subErr := s3a.doListFilerEntries(client, dir+"/"+subDir, "", cursor, subMarker, delimiter, false, bucket, eachEntryFn)
+		subNextMarker, subErr := s3a.doListFilerEntriesTracked(client, dir+"/"+subDir, "", cursor, subMarker, delimiter, false, bucket, listMetrics, depth+1, eachEntryFn)
 		if subErr != nil {
 			err = subErr
 			return
@@ -595,6 +699,7 @@ func (s3a *S3ApiServer) doListFilerEntries(client filer_pb.SeaweedFilerClient, d
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	listMetrics.recordDirectoryRead(depth)
 	stream, listErr := client.ListEntries(ctx, request)
 	if listErr != nil {
 		if errors.Is(listErr, filer_pb.ErrNotFound) {
@@ -618,6 +723,7 @@ func (s3a *S3ApiServer) doListFilerEntries(client filer_pb.SeaweedFilerClient, d
 		if entry == nil {
 			continue
 		}
+		listMetrics.recordEntrySeen(entry)
 		// listFilerEntries always calls doListFilerEntries with inclusiveStartFrom=false
 		// (S3 marker semantics are exclusive), but keep the guard explicit to preserve
 		// behavior if inclusive callers are introduced in the future.
@@ -688,7 +794,7 @@ func (s3a *S3ApiServer) doListFilerEntries(client filer_pb.SeaweedFilerClient, d
 					eachEntryFn(dir, entry)
 				}
 				// Recurse into subdirectory to list any children
-				subNextMarker, subErr := s3a.doListFilerEntries(client, dir+"/"+entry.Name, "", cursor, "", delimiter, false, bucket, eachEntryFn)
+				subNextMarker, subErr := s3a.doListFilerEntriesTracked(client, dir+"/"+entry.Name, "", cursor, "", delimiter, false, bucket, listMetrics, depth+1, eachEntryFn)
 				if subErr != nil {
 					err = fmt.Errorf("doListFilerEntries2: %w", subErr)
 					return

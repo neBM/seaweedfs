@@ -387,6 +387,49 @@ var (
 			Help:      "Bucketed histogram of s3 time to first byte request processing time.",
 			Buckets:   prometheus.ExponentialBuckets(0.001, 2, 27),
 		}, []string{"type", "bucket"})
+
+	S3ListFilerDirectoryReadsCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: Namespace,
+			Subsystem: "s3",
+			Name:      "list_filer_directory_reads_total",
+			Help:      "Total number of filer directory reads performed by S3 bucket list requests.",
+		}, []string{"bucket", "api", "delimiter"})
+
+	S3ListEntriesSeenCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: Namespace,
+			Subsystem: "s3",
+			Name:      "list_entries_seen_total",
+			Help:      "Total number of filer entries seen while serving S3 bucket list requests.",
+		}, []string{"bucket", "api", "delimiter", "type"})
+
+	S3ListEntriesEmittedCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: Namespace,
+			Subsystem: "s3",
+			Name:      "list_entries_emitted_total",
+			Help:      "Total number of entries emitted in S3 bucket list responses.",
+		}, []string{"bucket", "api", "delimiter", "type"})
+
+	S3ListDirectoryReadsPerRequestHistogram = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: Namespace,
+			Subsystem: "s3",
+			Name:      "list_directory_reads_per_request",
+			Help:      "Bucketed histogram of filer directory reads performed per S3 bucket list request.",
+			Buckets:   prometheus.ExponentialBuckets(1, 2, 20),
+		}, []string{"bucket", "api", "delimiter"})
+
+	S3ListMaxDepthPerRequestHistogram = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: Namespace,
+			Subsystem: "s3",
+			Name:      "list_max_depth_per_request",
+			Help:      "Bucketed histogram of maximum filer directory recursion depth per S3 bucket list request.",
+			Buckets:   prometheus.ExponentialBuckets(1, 2, 16),
+		}, []string{"bucket", "api", "delimiter"})
+
 	S3InFlightRequestsGauge = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Namespace: Namespace,
@@ -523,6 +566,11 @@ func init() {
 	Gather.MustRegister(S3RequestCounter)
 	Gather.MustRegister(S3HandlerCounter)
 	Gather.MustRegister(S3RequestHistogram)
+	Gather.MustRegister(S3ListFilerDirectoryReadsCounter)
+	Gather.MustRegister(S3ListEntriesSeenCounter)
+	Gather.MustRegister(S3ListEntriesEmittedCounter)
+	Gather.MustRegister(S3ListDirectoryReadsPerRequestHistogram)
+	Gather.MustRegister(S3ListMaxDepthPerRequestHistogram)
 	Gather.MustRegister(S3InFlightRequestsGauge)
 	Gather.MustRegister(S3InFlightUploadBytesGauge)
 	Gather.MustRegister(S3InFlightUploadCountGauge)
