@@ -268,15 +268,6 @@ func mimeDetect(r *http.Request, dataReader io.Reader) io.ReadCloser {
 	return io.NopCloser(dataReader)
 }
 
-func urlEscapeObject(object string) string {
-	normalized := s3_constants.NormalizeObjectKey(object)
-	// Ensure leading slash for filer paths
-	if normalized != "" && !strings.HasPrefix(normalized, "/") {
-		normalized = "/" + normalized
-	}
-	return urlPathEscape(normalized)
-}
-
 func entryUrlEncode(dir string, entry string, encodingTypeUrl bool) (dirName string, entryName string, prefix string) {
 	if !encodingTypeUrl {
 		return dir, entry, entry
@@ -1062,7 +1053,7 @@ func (s3a *S3ApiServer) streamFromVolumeServers(w http.ResponseWriter, r *http.R
 	// Prepare streaming function with simple master client wrapper
 	tStreamPrep := time.Now()
 	// Use filerClient directly (not wrapped) so it can support cache invalidation
-	streamFn, err := filer.PrepareStreamContentWithThrottler(
+	streamFn, err := filer.PrepareStreamContentWithPrefetch(
 		ctx,
 		s3a.filerClient,
 		filer.JwtForVolumeServer, // Use filer's JWT function (loads config once, generates JWT locally)
@@ -1070,6 +1061,7 @@ func (s3a *S3ApiServer) streamFromVolumeServers(w http.ResponseWriter, r *http.R
 		offset,
 		size,
 		0, // no throttling
+		4, // prefetch 4 chunks ahead for overlapped fetching
 	)
 	streamPrepTime = time.Since(tStreamPrep)
 	if err != nil {
@@ -1937,7 +1929,7 @@ func (s3a *S3ApiServer) getEncryptedStreamFromVolumes(ctx context.Context, entry
 	}
 
 	// Create streaming reader - use filerClient directly for cache invalidation support
-	streamFn, err := filer.PrepareStreamContentWithThrottler(
+	streamFn, err := filer.PrepareStreamContentWithPrefetch(
 		ctx,
 		s3a.filerClient,
 		filer.JwtForVolumeServer, // Use filer's JWT function (loads config once, generates JWT locally)
@@ -1945,6 +1937,7 @@ func (s3a *S3ApiServer) getEncryptedStreamFromVolumes(ctx context.Context, entry
 		0,
 		totalSize,
 		0,
+		4, // prefetch 4 chunks ahead for overlapped fetching
 	)
 	if err != nil {
 		return nil, err
@@ -2074,6 +2067,21 @@ func (s3a *S3ApiServer) setResponseHeaders(w http.ResponseWriter, r *http.Reques
 		}
 		if tagCount > 0 {
 			w.Header().Set(s3_constants.AmzTagCount, strconv.Itoa(tagCount))
+		}
+	}
+
+	// Set checksum header if stored in metadata, but only when:
+	// 1. The request contains "x-amz-checksum-mode: ENABLED" (per AWS S3 spec)
+	// 2. The request is NOT a ranged GET (Range header absent)
+	//    The stored checksum covers the full object; returning it for partial
+	//    responses causes SDK checksum validation failures.
+	if r != nil && r.Header.Get("X-Amz-Checksum-Mode") == "ENABLED" && r.Header.Get("Range") == "" {
+		if entry.Extended != nil {
+			if algoName, ok := entry.Extended[s3_constants.ExtChecksumAlgorithm]; ok {
+				if checksumVal, ok := entry.Extended[s3_constants.ExtChecksumValue]; ok {
+					w.Header().Set(string(algoName), string(checksumVal))
+				}
+			}
 		}
 	}
 
@@ -2893,59 +2901,6 @@ func (m *MultipartSSEReader) Close() error {
 		}
 	}
 	return lastErr
-}
-
-// Read implements the io.Reader interface for SSERangeReader
-func (r *SSERangeReader) Read(p []byte) (n int, err error) {
-	// Skip bytes iteratively (no recursion) until we reach the offset
-	for r.skipped < r.offset {
-		skipNeeded := r.offset - r.skipped
-
-		// Lazily allocate skip buffer on first use, reuse thereafter
-		if r.skipBuf == nil {
-			// Use a fixed 32KB buffer for skipping (avoids per-call allocation)
-			r.skipBuf = make([]byte, 32*1024)
-		}
-
-		// Determine how much to skip in this iteration
-		bufSize := int64(len(r.skipBuf))
-		if skipNeeded < bufSize {
-			bufSize = skipNeeded
-		}
-
-		skipRead, skipErr := r.reader.Read(r.skipBuf[:bufSize])
-		r.skipped += int64(skipRead)
-
-		if skipErr != nil {
-			return 0, skipErr
-		}
-
-		// Guard against infinite loop: io.Reader may return (0, nil)
-		// which is permitted by the interface contract for non-empty buffers.
-		// If we get zero bytes without an error, treat it as an unexpected EOF.
-		if skipRead == 0 {
-			return 0, io.ErrUnexpectedEOF
-		}
-	}
-
-	// If we have a remaining limit and it's reached
-	if r.remaining == 0 {
-		return 0, io.EOF
-	}
-
-	// Calculate how much to read
-	readSize := len(p)
-	if r.remaining > 0 && int64(readSize) > r.remaining {
-		readSize = int(r.remaining)
-	}
-
-	// Read the data
-	n, err = r.reader.Read(p[:readSize])
-	if r.remaining > 0 {
-		r.remaining -= int64(n)
-	}
-
-	return n, err
 }
 
 // PartBoundaryInfo holds information about a part's chunk boundaries

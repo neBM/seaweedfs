@@ -81,6 +81,7 @@ type FilerOptions struct {
 	exposeDirectoryData       *bool
 	tusBasePath               *string
 	certProvider              certprovider.Provider
+	s3ConfigFile              *string // optional path to static S3 identity config
 }
 
 func init() {
@@ -146,6 +147,7 @@ func init() {
 	filerS3Options.iamReadOnly = cmdFiler.Flag.Bool("s3.iam.readOnly", true, "disable IAM write operations on this server")
 	filerS3Options.portIceberg = cmdFiler.Flag.Int("s3.port.iceberg", 8181, "Iceberg REST Catalog server listen port (0 to disable)")
 	filerS3Options.externalUrl = cmdFiler.Flag.String("s3.externalUrl", "", "the external URL clients use to connect (e.g. https://api.example.com:9000). Used for S3 signature verification behind a reverse proxy. Falls back to S3_EXTERNAL_URL env var.")
+	filerS3Options.defaultFileMode = cmdFiler.Flag.String("s3.defaultFileMode", "", "default file mode for S3 uploaded objects, e.g. 0660, 0644, 0666")
 
 	// start webdav on filer
 	filerStartWebDav = cmdFiler.Flag.Bool("webdav", false, "whether to start webdav gateway")
@@ -340,6 +342,15 @@ func (fo *FilerOptions) startFiler() {
 		glog.Warningf("Failed to initialize credential manager: %v", err)
 	} else {
 		glog.V(0).Infof("Initialized credential manager: %s", credentialManager.GetStoreName())
+	}
+
+	// Load static S3 identities from config file if specified
+	if fo.s3ConfigFile != nil && *fo.s3ConfigFile != "" {
+		if credentialManager != nil {
+			if err := credentialManager.LoadS3ConfigFile(*fo.s3ConfigFile); err != nil {
+				glog.Warningf("Failed to load S3 config file for static identities: %v", err)
+			}
+		}
 	}
 
 	fs, nfs_err := weed_server.NewFilerServer(defaultMux, publicVolumeMux, &weed_server.FilerOption{

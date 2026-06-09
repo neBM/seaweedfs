@@ -19,7 +19,6 @@ import (
 
 	"github.com/seaweedfs/seaweedfs/weed/s3api/s3_constants"
 	"github.com/seaweedfs/seaweedfs/weed/util/request_id"
-	"github.com/seaweedfs/seaweedfs/weed/util/version"
 	"google.golang.org/grpc/metadata"
 
 	"github.com/seaweedfs/seaweedfs/weed/filer"
@@ -155,13 +154,14 @@ func submitForClientHandler(w http.ResponseWriter, r *http.Request, masterFn ope
 		}
 	}
 	ar := &operation.VolumeAssignRequest{
-		Count:       count,
-		DataCenter:  r.FormValue("dataCenter"),
-		Rack:        r.FormValue("rack"),
-		Replication: r.FormValue("replication"),
-		Collection:  r.FormValue("collection"),
-		Ttl:         r.FormValue("ttl"),
-		DiskType:    r.FormValue("disk"),
+		Count:            count,
+		DataCenter:       r.FormValue("dataCenter"),
+		Rack:             r.FormValue("rack"),
+		Replication:      r.FormValue("replication"),
+		Collection:       r.FormValue("collection"),
+		Ttl:              r.FormValue("ttl"),
+		DiskType:         r.FormValue("disk"),
+		ExpectedDataSize: uint64(max(int64(0), int64(pu.OriginalDataSize))),
 	}
 	assignResult, ae := operation.Assign(ctx, masterFn, grpcDialOption, ar)
 	if ae != nil {
@@ -235,25 +235,6 @@ func parseURLPath(path string) (vid, fid, filename, ext string, isVolumeIdOnly b
 		}
 	}
 	return
-}
-
-func statsHealthHandler(w http.ResponseWriter, r *http.Request) {
-	m := make(map[string]interface{})
-	m["Version"] = version.Version()
-	writeJsonQuiet(w, r, http.StatusOK, m)
-}
-func statsCounterHandler(w http.ResponseWriter, r *http.Request) {
-	m := make(map[string]interface{})
-	m["Version"] = version.Version()
-	m["Counters"] = serverStats
-	writeJsonQuiet(w, r, http.StatusOK, m)
-}
-
-func statsMemoryHandler(w http.ResponseWriter, r *http.Request) {
-	m := make(map[string]interface{})
-	m["Version"] = version.Version()
-	m["Memory"] = stats.MemStat()
-	writeJsonQuiet(w, r, http.StatusOK, m)
 }
 
 var StaticFS fs.FS

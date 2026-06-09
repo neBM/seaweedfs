@@ -6,38 +6,38 @@ import (
 )
 
 type MountOptions struct {
-	filer              *string
-	filerMountRootPath *string
-	dir                *string
-	dirAutoCreate      *bool
-	collection         *string
-	collectionQuota    *int
-	replication        *string
-	diskType           *string
-	ttlSec             *int
-	chunkSizeLimitMB   *int
-	concurrentWriters  *int
-	concurrentReaders  *int
-	cacheMetaTtlSec    *int
-	cacheDirForRead    *string
-	cacheDirForWrite   *string
-	cacheSizeMBForRead *int64
-	dataCenter         *string
-	allowOthers        *bool
-	defaultPermissions *bool
-	umaskString        *string
-	nonempty           *bool
-	volumeServerAccess *string
-	uidMap             *string
-	gidMap             *string
-	readOnly           *bool
+	filer                *string
+	filerMountRootPath   *string
+	dir                  *string
+	dirAutoCreate        *bool
+	collection           *string
+	collectionQuota      *int
+	replication          *string
+	diskType             *string
+	ttlSec               *int
+	chunkSizeLimitMB     *int
+	concurrentWriters    *int
+	concurrentReaders    *int
+	cacheMetaTtlSec      *int
+	cacheDirForRead      *string
+	cacheDirForWrite     *string
+	cacheSizeMBForRead   *int64
+	dataCenter           *string
+	allowOthers          *bool
+	defaultPermissions   *bool
+	umaskString          *string
+	nonempty             *bool
+	volumeServerAccess   *string
+	uidMap               *string
+	gidMap               *string
+	readOnly             *bool
 	includeSystemEntries *bool
-	debug              *bool
-	debugPort          *int
-	localSocket        *string
-	disableXAttr       *bool
-	extraOptions       []string
-	fuseCommandPid     int
+	debug                *bool
+	debugPort            *int
+	localSocket          *string
+	disableXAttr         *bool
+	extraOptions         []string
+	fuseCommandPid       int
 
 	// Periodic metadata flush to protect against orphan chunk cleanup
 	metadataFlushSeconds *int
@@ -51,6 +51,12 @@ type MountOptions struct {
 	rdmaTimeoutMs     *int
 
 	dirIdleEvictSec *int
+
+	// Distributed lock for cross-mount write coordination
+	distributedLock *bool
+
+	// POSIX compliance options
+	posixDirNlink *bool
 
 	// FUSE performance options
 	writebackCache *bool
@@ -124,6 +130,12 @@ func init() {
 	mountCpuProfile = cmdMount.Flag.String("cpuprofile", "", "cpu profile output file")
 	mountMemProfile = cmdMount.Flag.String("memprofile", "", "memory profile output file")
 	mountReadRetryTime = cmdMount.Flag.Duration("readRetryTime", 6*time.Second, "maximum read retry wait time")
+
+	// Distributed lock for cross-mount write coordination
+	mountOptions.distributedLock = cmdMount.Flag.Bool("dlm", false, "enable distributed lock for cross-mount write coordination (only one mount can write a file at a time)")
+
+	// POSIX compliance options
+	mountOptions.posixDirNlink = cmdMount.Flag.Bool("posix.dirNLink", false, "report POSIX-compliant directory nlink (2 + subdirectory count); costs one directory listing per stat")
 
 	// FUSE performance options
 	mountOptions.writebackCache = cmdMount.Flag.Bool("writebackCache", false, "enable FUSE writeback cache for improved write performance (at risk of data loss on crash)")

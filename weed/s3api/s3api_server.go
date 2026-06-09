@@ -60,6 +60,7 @@ type S3ApiServerOption struct {
 	BindIp                    string
 	GrpcPort                  int
 	ExternalUrl               string // external URL clients use, for signature verification behind a reverse proxy
+	DefaultFileMode           uint32 // default file permission mode for S3 uploads (e.g. 0660, 0644)
 }
 
 type S3ApiServer struct {
@@ -275,6 +276,7 @@ func NewS3ApiServerWithStore(router *mux.Router, option *S3ApiServerOption, expl
 				glog.Errorf("fail to load config file %s: %v", option.Config, err)
 			} else {
 				glog.V(1).Infof("Loaded %d identities from config file %s", len(s3ApiServer.iam.identities), option.Config)
+				s3ApiServer.iam.updateCredentialManagerStaticIdentities()
 			}
 		})
 	}
@@ -521,7 +523,7 @@ func (s3a *S3ApiServer) UnifiedPostHandler(w http.ResponseWriter, r *http.Reques
 
 	// 3. Dispatch
 	action := r.Form.Get("Action")
-	if strings.HasPrefix(action, "AssumeRole") {
+	if strings.HasPrefix(action, "AssumeRole") || action == "GetCallerIdentity" {
 		// STS
 		if s3a.stsHandlers == nil {
 			s3err.WriteErrorResponse(w, r, s3err.ErrServiceUnavailable)
@@ -825,7 +827,11 @@ func (s3a *S3ApiServer) registerRouter(router *mux.Router) {
 		apiRouter.Methods(http.MethodPost).Path("/").Queries("Action", "AssumeRoleWithLDAPIdentity").
 			HandlerFunc(track(s3a.stsHandlers.HandleSTSRequest, "STS-LDAP"))
 
-		glog.V(1).Infof("STS API enabled on S3 port (AssumeRole, AssumeRoleWithWebIdentity, AssumeRoleWithLDAPIdentity)")
+		// GetCallerIdentity - returns caller identity based on SigV4 authentication
+		apiRouter.Methods(http.MethodPost).Path("/").Queries("Action", "GetCallerIdentity").
+			HandlerFunc(track(s3a.stsHandlers.HandleSTSRequest, "STS-GetCallerIdentity"))
+
+		glog.V(1).Infof("STS API enabled on S3 port (AssumeRole, AssumeRoleWithWebIdentity, AssumeRoleWithLDAPIdentity, GetCallerIdentity)")
 	}
 
 	// Embedded IAM API endpoint
@@ -848,7 +854,7 @@ func (s3a *S3ApiServer) registerRouter(router *mux.Router) {
 
 			// Action in Query String is handled by explicit STS routes above
 			action := r.URL.Query().Get("Action")
-			if action == "AssumeRole" || action == "AssumeRoleWithWebIdentity" || action == "AssumeRoleWithLDAPIdentity" {
+			if action == "AssumeRole" || action == "AssumeRoleWithWebIdentity" || action == "AssumeRoleWithLDAPIdentity" || action == "GetCallerIdentity" {
 				return false
 			}
 
@@ -1048,4 +1054,53 @@ func (s3a *S3ApiServer) DefaultAllow() bool {
 		return false
 	}
 	return s3a.iam.iamIntegration.DefaultAllow()
+}
+
+// ValidateS3Credential validates an S3 access key / secret key pair.
+// Returns the identity name and identity object on success.
+func (s3a *S3ApiServer) ValidateS3Credential(accessKey, secretKey string) (string, interface{}, error) {
+	if s3a.iam == nil {
+		return "", nil, fmt.Errorf("IAM not configured")
+	}
+	identity, cred, found := s3a.iam.LookupByAccessKey(accessKey)
+	if !found {
+		return "", nil, fmt.Errorf("access key not found")
+	}
+	if cred.SecretKey != secretKey {
+		return "", nil, fmt.Errorf("invalid secret key")
+	}
+	if identity.Disabled {
+		return "", nil, fmt.Errorf("identity is disabled")
+	}
+	if cred.isCredentialExpired() {
+		return "", nil, fmt.Errorf("credential expired")
+	}
+	if cred.Status == "Inactive" {
+		return "", nil, fmt.Errorf("credential is inactive")
+	}
+	return identity.Name, identity, nil
+}
+
+// GetCredentialByAccessKey looks up a credential by access key.
+// Returns the identity name, identity object, and secret key.
+// Used for verifying Iceberg OAuth Bearer tokens with the exact credential
+// that was used to sign the token.
+func (s3a *S3ApiServer) GetCredentialByAccessKey(accessKey string) (string, interface{}, string, error) {
+	if s3a.iam == nil {
+		return "", nil, "", fmt.Errorf("IAM not configured")
+	}
+	identity, cred, found := s3a.iam.LookupByAccessKey(accessKey)
+	if !found {
+		return "", nil, "", fmt.Errorf("access key not found")
+	}
+	if identity.Disabled {
+		return "", nil, "", fmt.Errorf("identity is disabled")
+	}
+	if cred.isCredentialExpired() {
+		return "", nil, "", fmt.Errorf("credential expired")
+	}
+	if cred.Status == "Inactive" {
+		return "", nil, "", fmt.Errorf("credential is inactive")
+	}
+	return identity.Name, identity, cred.SecretKey, nil
 }

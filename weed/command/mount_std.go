@@ -345,14 +345,16 @@ func RunMount(option *MountOptions, umask os.FileMode) bool {
 		IsMacOs:                     runtime.GOOS == "darwin",
 		MetadataFlushSeconds:        *option.metadataFlushSeconds,
 		// RDMA acceleration options
-		RdmaEnabled:       *option.rdmaEnabled,
-		RdmaSidecarAddr:   *option.rdmaSidecarAddr,
-		RdmaFallback:      *option.rdmaFallback,
-		RdmaReadOnly:      *option.rdmaReadOnly,
-		RdmaMaxConcurrent: *option.rdmaMaxConcurrent,
-		RdmaTimeoutMs:     *option.rdmaTimeoutMs,
-		DirIdleEvictSec:   *option.dirIdleEvictSec,
-		WritebackCache:    option.writebackCache != nil && *option.writebackCache,
+		RdmaEnabled:           *option.rdmaEnabled,
+		RdmaSidecarAddr:       *option.rdmaSidecarAddr,
+		RdmaFallback:          *option.rdmaFallback,
+		RdmaReadOnly:          *option.rdmaReadOnly,
+		RdmaMaxConcurrent:     *option.rdmaMaxConcurrent,
+		RdmaTimeoutMs:         *option.rdmaTimeoutMs,
+		DirIdleEvictSec:       *option.dirIdleEvictSec,
+		EnableDistributedLock: option.distributedLock != nil && *option.distributedLock,
+		WritebackCache:        option.writebackCache != nil && *option.writebackCache,
+		PosixDirNlink:         option.posixDirNlink != nil && *option.posixDirNlink,
 	})
 
 	// create mount root

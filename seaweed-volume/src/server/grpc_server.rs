@@ -1867,6 +1867,7 @@ impl VolumeServer for VolumeGrpcService {
         {
             let needle_header = resp.needle_header;
             let mut needle_body = resp.needle_body;
+            let resp_version = resp.version;
 
             if needle_header.is_empty() {
                 continue;
@@ -1891,8 +1892,36 @@ impl VolumeServer for VolumeGrpcService {
             // Parse needle from header + body
             let mut n = Needle::default();
             n.read_header(&needle_header);
-            n.read_body_v2(&needle_body)
-                .map_err(|e| Status::internal(format!("parse needle body: {}", e)))?;
+
+            if n.size.0 < 0 {
+                return Err(Status::invalid_argument(format!(
+                    "unexpected negative needle size {} for needle {}",
+                    n.size.0, n.id.0
+                )));
+            } else if n.size.0 > 0 {
+                // Normal needle: parse the body fields (DataSize, Data, flags, etc.)
+                n.read_body_v2(&needle_body)
+                    .map_err(|e| Status::internal(format!("parse needle body: {}", e)))?;
+            } else {
+                // Delete tombstone (size == 0): body is checksum + timestamp
+                // (V3) or checksum only (V2) + padding. Validate minimum
+                // footer length for the protocol version.
+                use crate::storage::types::{
+                    NEEDLE_CHECKSUM_SIZE, TIMESTAMP_SIZE, VERSION_3, Version,
+                };
+                let version = Version(resp_version as u8);
+                let min_footer = if version >= VERSION_3 {
+                    NEEDLE_CHECKSUM_SIZE + TIMESTAMP_SIZE
+                } else {
+                    NEEDLE_CHECKSUM_SIZE
+                };
+                if needle_body.len() < min_footer {
+                    return Err(Status::invalid_argument(format!(
+                        "tombstone needle {} body too short: got {} bytes, need >= {} for version {}",
+                        n.id.0, needle_body.len(), min_footer, resp_version
+                    )));
+                }
+            }
 
             // Write needle to local volume
             let mut store = state.store.write().unwrap();
@@ -4047,11 +4076,12 @@ fn find_last_append_at_ns(idx_path: &str, dat_path: &str, version: u32) -> Optio
     let mut header = [0u8; 16];
     dat_file.read_exact(&mut header).ok()?;
     let needle_size = i32::from_be_bytes([header[12], header[13], header[14], header[15]]);
-    if needle_size <= 0 {
+    if needle_size < 0 {
         return None;
     }
 
     // Seek to tail: offset + 16 (header) + size -> checksum (4) + timestamp (8)
+    // For delete needles (size == 0), the tail is right after the header.
     let tail_offset = actual_offset as u64 + 16 + needle_size as u64;
     dat_file.seek(SeekFrom::Start(tail_offset)).ok()?;
 
@@ -4162,6 +4192,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
 
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
@@ -4223,6 +4254,7 @@ mod tests {
                 }));
 
                 let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+                let _ = ready_tx.send(());
                 axum::serve(listener, app)
                     .with_graceful_shutdown(async move {
                         let _ = shutdown_rx.await;
@@ -4232,6 +4264,8 @@ mod tests {
             });
         });
 
+        // Wait for the server thread to be ready before returning.
+        ready_rx.recv().unwrap();
         (format!("http://{}", addr), shutdown_tx)
     }
 
@@ -4277,7 +4311,9 @@ mod tests {
         std::fs::remove_file(&dat_path).unwrap();
 
         let (endpoint, shutdown_tx) = spawn_fake_s3_server(dat_bytes.clone());
-        global_s3_tier_registry().write().unwrap().clear();
+        // Use a test-specific backend_id to avoid racing with other tests
+        // that share the global registry.  Never call clear() — only
+        // register/remove our own entries.
         let tier_config = S3TierConfig {
             access_key: "access".to_string(),
             secret_key: "secret".to_string(),
@@ -4289,14 +4325,16 @@ mod tests {
         };
         {
             let mut registry = global_s3_tier_registry().write().unwrap();
-            registry.register("s3.default".to_string(), S3TierBackend::new(&tier_config));
-            registry.register("s3".to_string(), S3TierBackend::new(&tier_config));
+            registry.register(
+                "s3.incr_copy_test".to_string(),
+                S3TierBackend::new(&tier_config),
+            );
         }
 
         let vif = crate::storage::volume::VifVolumeInfo {
             files: vec![crate::storage::volume::VifRemoteFile {
                 backend_type: "s3".to_string(),
-                backend_id: "default".to_string(),
+                backend_id: "incr_copy_test".to_string(),
                 key: "remote-key".to_string(),
                 offset: 0,
                 file_size: dat_bytes.len() as u64,
@@ -4505,7 +4543,10 @@ mod tests {
         assert_eq!(copied, dat_bytes[super_block_size as usize..]);
 
         let _ = shutdown_tx.send(());
-        global_s3_tier_registry().write().unwrap().clear();
+        global_s3_tier_registry()
+            .write()
+            .unwrap()
+            .remove("s3.incr_copy_test");
     }
 
     #[tokio::test]

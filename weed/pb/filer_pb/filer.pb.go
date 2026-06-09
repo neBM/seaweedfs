@@ -961,6 +961,9 @@ type FuseAttributes struct {
 	Md5           []byte                 `protobuf:"bytes,14,opt,name=md5,proto3" json:"md5,omitempty"`
 	Rdev          uint32                 `protobuf:"varint,16,opt,name=rdev,proto3" json:"rdev,omitempty"`
 	Inode         uint64                 `protobuf:"varint,17,opt,name=inode,proto3" json:"inode,omitempty"`
+	Ctime         int64                  `protobuf:"varint,18,opt,name=ctime,proto3" json:"ctime,omitempty"`                    // unix time in seconds, inode change time
+	MtimeNs       int32                  `protobuf:"varint,19,opt,name=mtime_ns,json=mtimeNs,proto3" json:"mtime_ns,omitempty"` // nanosecond component of mtime (0-999999999)
+	CtimeNs       int32                  `protobuf:"varint,20,opt,name=ctime_ns,json=ctimeNs,proto3" json:"ctime_ns,omitempty"` // nanosecond component of ctime (0-999999999)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1089,6 +1092,27 @@ func (x *FuseAttributes) GetRdev() uint32 {
 func (x *FuseAttributes) GetInode() uint64 {
 	if x != nil {
 		return x.Inode
+	}
+	return 0
+}
+
+func (x *FuseAttributes) GetCtime() int64 {
+	if x != nil {
+		return x.Ctime
+	}
+	return 0
+}
+
+func (x *FuseAttributes) GetMtimeNs() int32 {
+	if x != nil {
+		return x.MtimeNs
+	}
+	return 0
+}
+
+func (x *FuseAttributes) GetCtimeNs() int32 {
+	if x != nil {
+		return x.CtimeNs
 	}
 	return 0
 }
@@ -1855,18 +1879,19 @@ func (x *StreamRenameEntryResponse) GetTsNs() int64 {
 }
 
 type AssignVolumeRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Count         int32                  `protobuf:"varint,1,opt,name=count,proto3" json:"count,omitempty"`
-	Collection    string                 `protobuf:"bytes,2,opt,name=collection,proto3" json:"collection,omitempty"`
-	Replication   string                 `protobuf:"bytes,3,opt,name=replication,proto3" json:"replication,omitempty"`
-	TtlSec        int32                  `protobuf:"varint,4,opt,name=ttl_sec,json=ttlSec,proto3" json:"ttl_sec,omitempty"`
-	DataCenter    string                 `protobuf:"bytes,5,opt,name=data_center,json=dataCenter,proto3" json:"data_center,omitempty"`
-	Path          string                 `protobuf:"bytes,6,opt,name=path,proto3" json:"path,omitempty"`
-	Rack          string                 `protobuf:"bytes,7,opt,name=rack,proto3" json:"rack,omitempty"`
-	DataNode      string                 `protobuf:"bytes,9,opt,name=data_node,json=dataNode,proto3" json:"data_node,omitempty"`
-	DiskType      string                 `protobuf:"bytes,8,opt,name=disk_type,json=diskType,proto3" json:"disk_type,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Count            int32                  `protobuf:"varint,1,opt,name=count,proto3" json:"count,omitempty"`
+	Collection       string                 `protobuf:"bytes,2,opt,name=collection,proto3" json:"collection,omitempty"`
+	Replication      string                 `protobuf:"bytes,3,opt,name=replication,proto3" json:"replication,omitempty"`
+	TtlSec           int32                  `protobuf:"varint,4,opt,name=ttl_sec,json=ttlSec,proto3" json:"ttl_sec,omitempty"`
+	DataCenter       string                 `protobuf:"bytes,5,opt,name=data_center,json=dataCenter,proto3" json:"data_center,omitempty"`
+	Path             string                 `protobuf:"bytes,6,opt,name=path,proto3" json:"path,omitempty"`
+	Rack             string                 `protobuf:"bytes,7,opt,name=rack,proto3" json:"rack,omitempty"`
+	DataNode         string                 `protobuf:"bytes,9,opt,name=data_node,json=dataNode,proto3" json:"data_node,omitempty"`
+	DiskType         string                 `protobuf:"bytes,8,opt,name=disk_type,json=diskType,proto3" json:"disk_type,omitempty"`
+	ExpectedDataSize uint64                 `protobuf:"varint,10,opt,name=expected_data_size,json=expectedDataSize,proto3" json:"expected_data_size,omitempty"` // hint for size-aware volume selection
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *AssignVolumeRequest) Reset() {
@@ -1960,6 +1985,13 @@ func (x *AssignVolumeRequest) GetDiskType() string {
 		return x.DiskType
 	}
 	return ""
+}
+
+func (x *AssignVolumeRequest) GetExpectedDataSize() uint64 {
+	if x != nil {
+		return x.ExpectedDataSize
+	}
+	return 0
 }
 
 type AssignVolumeResponse struct {
@@ -5136,7 +5168,7 @@ const file_filer_proto_rawDesc = "" +
 	"\x06FileId\x12\x1b\n" +
 	"\tvolume_id\x18\x01 \x01(\rR\bvolumeId\x12\x19\n" +
 	"\bfile_key\x18\x02 \x01(\x04R\afileKey\x12\x16\n" +
-	"\x06cookie\x18\x03 \x01(\aR\x06cookie\"\xe8\x02\n" +
+	"\x06cookie\x18\x03 \x01(\aR\x06cookie\"\xb4\x03\n" +
 	"\x0eFuseAttributes\x12\x1b\n" +
 	"\tfile_size\x18\x01 \x01(\x04R\bfileSize\x12\x14\n" +
 	"\x05mtime\x18\x02 \x01(\x03R\x05mtime\x12\x1b\n" +
@@ -5153,7 +5185,10 @@ const file_filer_proto_rawDesc = "" +
 	"\x0esymlink_target\x18\r \x01(\tR\rsymlinkTarget\x12\x10\n" +
 	"\x03md5\x18\x0e \x01(\fR\x03md5\x12\x12\n" +
 	"\x04rdev\x18\x10 \x01(\rR\x04rdev\x12\x14\n" +
-	"\x05inode\x18\x11 \x01(\x04R\x05inode\"\x82\x02\n" +
+	"\x05inode\x18\x11 \x01(\x04R\x05inode\x12\x14\n" +
+	"\x05ctime\x18\x12 \x01(\x03R\x05ctime\x12\x19\n" +
+	"\bmtime_ns\x18\x13 \x01(\x05R\amtimeNs\x12\x19\n" +
+	"\bctime_ns\x18\x14 \x01(\x05R\actimeNs\"\x82\x02\n" +
 	"\x12CreateEntryRequest\x12\x1c\n" +
 	"\tdirectory\x18\x01 \x01(\tR\tdirectory\x12%\n" +
 	"\x05entry\x18\x02 \x01(\v2\x0f.filer_pb.EntryR\x05entry\x12\x15\n" +
@@ -5221,7 +5256,7 @@ const file_filer_proto_rawDesc = "" +
 	"\x19StreamRenameEntryResponse\x12\x1c\n" +
 	"\tdirectory\x18\x01 \x01(\tR\tdirectory\x12J\n" +
 	"\x12event_notification\x18\x02 \x01(\v2\x1b.filer_pb.EventNotificationR\x11eventNotification\x12\x13\n" +
-	"\x05ts_ns\x18\x03 \x01(\x03R\x04tsNs\"\x89\x02\n" +
+	"\x05ts_ns\x18\x03 \x01(\x03R\x04tsNs\"\xb7\x02\n" +
 	"\x13AssignVolumeRequest\x12\x14\n" +
 	"\x05count\x18\x01 \x01(\x05R\x05count\x12\x1e\n" +
 	"\n" +
@@ -5234,7 +5269,9 @@ const file_filer_proto_rawDesc = "" +
 	"\x04path\x18\x06 \x01(\tR\x04path\x12\x12\n" +
 	"\x04rack\x18\a \x01(\tR\x04rack\x12\x1b\n" +
 	"\tdata_node\x18\t \x01(\tR\bdataNode\x12\x1b\n" +
-	"\tdisk_type\x18\b \x01(\tR\bdiskType\"\xe1\x01\n" +
+	"\tdisk_type\x18\b \x01(\tR\bdiskType\x12,\n" +
+	"\x12expected_data_size\x18\n" +
+	" \x01(\x04R\x10expectedDataSize\"\xe1\x01\n" +
 	"\x14AssignVolumeResponse\x12\x17\n" +
 	"\afile_id\x18\x01 \x01(\tR\x06fileId\x12\x14\n" +
 	"\x05count\x18\x04 \x01(\x05R\x05count\x12\x12\n" +

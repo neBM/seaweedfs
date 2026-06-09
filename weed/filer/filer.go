@@ -40,28 +40,29 @@ var (
 )
 
 type Filer struct {
-	UniqueFilerId       int32
-	UniqueFilerEpoch    int32
-	Store               VirtualFilerStore
-	MasterClient        *wdclient.MasterClient
-	fileIdDeletionQueue *util.UnboundedQueue
-	GrpcDialOption      grpc.DialOption
-	DirBucketsPath      string
-	Cipher              bool
-	LocalMetaLogBuffer  *log_buffer.LogBuffer
-	metaLogCollection   string
-	metaLogReplication  string
-	MetaAggregator      *MetaAggregator
-	Signature           int32
-	FilerConf           *FilerConf
-	RemoteStorage       *FilerRemoteStorage
-	lazyFetchGroup      singleflight.Group
-	lazyListGroup       singleflight.Group
-	Dlm                 *lock_manager.DistributedLockManager
-	MaxFilenameLength   uint32
-	deletionQuit        chan struct{}
-	DeletionRetryQueue  *DeletionRetryQueue
-	EmptyFolderCleaner  *empty_folder_cleanup.EmptyFolderCleaner
+	UniqueFilerId           int32
+	UniqueFilerEpoch        int32
+	Store                   VirtualFilerStore
+	MasterClient            *wdclient.MasterClient
+	fileIdDeletionQueue     *util.UnboundedQueue
+	GrpcDialOption          grpc.DialOption
+	DirBucketsPath          string
+	Cipher                  bool
+	LocalMetaLogBuffer      *log_buffer.LogBuffer
+	metaLogCollection       string
+	metaLogReplication      string
+	MetaAggregator          *MetaAggregator
+	Signature               int32
+	FilerConf               *FilerConf
+	RemoteStorage           *FilerRemoteStorage
+	lazyFetchGroup          singleflight.Group
+	lazyListGroup           singleflight.Group
+	Dlm                     *lock_manager.DistributedLockManager
+	MaxFilenameLength       uint32
+	deletionQuit            chan struct{}
+	DeletionRetryQueue      *DeletionRetryQueue
+	EmptyFolderCleaner      *empty_folder_cleanup.EmptyFolderCleaner
+	EmptyFolderCleanupDelay time.Duration
 }
 
 func NewFiler(masters pb.ServerDiscovery, grpcDialOption grpc.DialOption, filerHost pb.ServerAddress, filerGroup string, collection string, replication string, dataCenter string, maxFilenameLength uint32, notifyFn func()) *Filer {
@@ -123,7 +124,7 @@ func (f *Filer) AggregateFromPeers(self pb.ServerAddress, existingNodes []*maste
 	glog.V(0).Infof("%s aggregate from peers %+v", self, snapshot)
 
 	// Initialize the empty folder cleaner using the same LockRing as Dlm for consistent hashing
-	f.EmptyFolderCleaner = empty_folder_cleanup.NewEmptyFolderCleaner(f, f.Dlm.LockRing, self, f.DirBucketsPath)
+	f.EmptyFolderCleaner = empty_folder_cleanup.NewEmptyFolderCleaner(f, f.Dlm.LockRing, self, f.DirBucketsPath, f.EmptyFolderCleanupDelay)
 
 	f.MetaAggregator = NewMetaAggregator(f, self, f.GrpcDialOption)
 	f.MasterClient.SetOnPeerUpdateFn(func(update *master_pb.ClusterNodeUpdate, startFrom time.Time) {

@@ -13,6 +13,7 @@ import (
 	"github.com/seaweedfs/go-fuse/v2/fuse"
 	"google.golang.org/grpc"
 
+	"github.com/seaweedfs/seaweedfs/weed/cluster"
 	"github.com/seaweedfs/seaweedfs/weed/filer"
 	"github.com/seaweedfs/seaweedfs/weed/glog"
 	"github.com/seaweedfs/seaweedfs/weed/mount/meta_cache"
@@ -62,9 +63,9 @@ type Option struct {
 	MountMtime       time.Time
 	MountParentInode uint64
 
-	VolumeServerAccess string // how to access volume servers
-	Cipher             bool   // whether encrypt data on volume server
-	UidGidMapper       *meta_cache.UidGidMapper
+	VolumeServerAccess   string // how to access volume servers
+	Cipher               bool   // whether encrypt data on volume server
+	UidGidMapper         *meta_cache.UidGidMapper
 	IncludeSystemEntries bool
 
 	// Periodic metadata flush interval in seconds (0 to disable)
@@ -82,9 +83,21 @@ type Option struct {
 	// Directory cache refresh/eviction controls
 	DirIdleEvictSec int
 
+	// EnableDistributedLock enables DLM-based write coordination across mounts.
+	// When true, opening a file for write acquires a distributed lock that is
+	// held (with auto-renewal) until the file is closed. Only one mount can
+	// have a file open for writing at a time.
+	EnableDistributedLock bool
+
 	// WritebackCache enables async flush on close for improved small file write performance.
 	// When true, Flush() returns immediately and data upload + metadata flush happen in background.
 	WritebackCache bool
+
+	// PosixDirNlink enables POSIX-compliant directory nlink counting
+	// (nlink = 2 + number_of_subdirectories). This requires listing
+	// cached directory entries on every stat, which has a performance cost.
+	// When false (default), directories report nlink=2.
+	PosixDirNlink bool
 
 	uniqueCacheDirForRead  string
 	uniqueCacheDirForWrite string
@@ -116,6 +129,8 @@ type WFS struct {
 	filerClient          *wdclient.FilerClient // Cached volume location client
 	refreshMu            sync.Mutex
 	refreshingDirs       map[util.FullPath]struct{}
+	atimeMu              sync.Mutex
+	atimeMap             map[uint64]time.Time // inode -> atime, in-memory only, bounded
 	dirHotWindow         time.Duration
 	dirHotThreshold      int
 	dirIdleEvict         time.Duration
@@ -139,6 +154,10 @@ type WFS struct {
 	// mutations (create, update, delete, rename). All mutations go through one
 	// ordered stream to prevent cross-operation reordering.
 	streamMutate *streamMutateMux
+
+	// lockClient is the DLM client for cross-mount write coordination.
+	// Non-nil only when EnableDistributedLock is true.
+	lockClient *cluster.LockClient
 }
 
 const (
@@ -191,9 +210,17 @@ func NewSeaweedFileSystem(option *Option) *WFS {
 		fhLockTable:       util.NewLockTable[FileHandleId](),
 		posixLocks:        NewPosixLockTable(),
 		refreshingDirs:    make(map[util.FullPath]struct{}),
+		atimeMap:          make(map[uint64]time.Time, 8192),
 		dirHotWindow:      dirHotWindow,
 		dirHotThreshold:   dirHotThreshold,
 		dirIdleEvict:      dirIdleEvict,
+	}
+
+	if option.EnableDistributedLock && !option.WritebackCache && len(option.FilerAddresses) > 0 {
+		wfs.lockClient = cluster.NewLockClient(option.GrpcDialOption, option.FilerAddresses[0])
+		glog.V(0).Infof("distributed lock manager enabled for mount")
+	} else if option.EnableDistributedLock && option.WritebackCache {
+		glog.V(0).Infof("distributed lock manager disabled: writeback cache implies single-writer mode")
 	}
 
 	wfs.option.filerIndex = int32(rand.IntN(len(option.FilerAddresses)))

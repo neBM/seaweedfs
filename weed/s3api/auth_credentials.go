@@ -144,6 +144,10 @@ func (c *Credential) isCredentialExpired() bool {
 }
 
 // NewIdentityAccessManagement creates a new IAM manager
+func NewIdentityAccessManagement(option *S3ApiServerOption, filerClient *wdclient.FilerClient) *IdentityAccessManagement {
+	return NewIdentityAccessManagementWithStore(option, filerClient, "")
+}
+
 // SetFilerClient updates the filer client and its associated credential store
 func (iam *IdentityAccessManagement) SetFilerClient(filerClient *wdclient.FilerClient) {
 	iam.m.Lock()
@@ -194,10 +198,6 @@ func parseExternalUrlToHost(externalUrl string) (string, error) {
 		return host, nil
 	}
 	return net.JoinHostPort(host, port), nil
-}
-
-func NewIdentityAccessManagement(option *S3ApiServerOption, filerClient *wdclient.FilerClient) *IdentityAccessManagement {
-	return NewIdentityAccessManagementWithStore(option, filerClient, "")
 }
 
 func NewIdentityAccessManagementWithStore(option *S3ApiServerOption, filerClient *wdclient.FilerClient, explicitStore string) *IdentityAccessManagement {
@@ -294,6 +294,10 @@ func NewIdentityAccessManagementWithStore(option *S3ApiServerOption, filerClient
 	// Check for AWS environment variables and merge them if present
 	// This serves as an in-memory "static" configuration
 	iam.loadEnvironmentVariableCredentials()
+
+	// Update credential manager with all static identities (file + env vars)
+	// so that listing operations via filer gRPC also include them.
+	iam.updateCredentialManagerStaticIdentities()
 
 	// Determine whether to enable S3 authentication based on configuration
 	// For "weed mini" without any S3 config, default to allowing all access (isAuthEnabled = false)
@@ -1067,6 +1071,59 @@ func (iam *IdentityAccessManagement) IsStaticIdentity(identityName string) bool 
 	iam.m.RLock()
 	defer iam.m.RUnlock()
 	return iam.staticIdentityNames[identityName]
+}
+
+// updateCredentialManagerStaticIdentities syncs the current set of static
+// identities to the credential manager. Call this after any operation that
+// changes static identities (startup, config file reload, etc.).
+func (iam *IdentityAccessManagement) updateCredentialManagerStaticIdentities() {
+	if iam.credentialManager != nil {
+		iam.credentialManager.SetStaticIdentities(iam.GetStaticIdentities())
+	}
+}
+
+// GetStaticIdentities returns protobuf representations of all static identities.
+// This is used to include static identities in listing operations (ListUsers, etc.)
+func (iam *IdentityAccessManagement) GetStaticIdentities() []*iam_pb.Identity {
+	iam.m.RLock()
+	defer iam.m.RUnlock()
+
+	var result []*iam_pb.Identity
+	for _, ident := range iam.identities {
+		if !ident.IsStatic {
+			continue
+		}
+		var policyNames []string
+		if len(ident.PolicyNames) > 0 {
+			policyNames = make([]string, len(ident.PolicyNames))
+			copy(policyNames, ident.PolicyNames)
+		}
+		pbIdent := &iam_pb.Identity{
+			Name:        ident.Name,
+			Disabled:    ident.Disabled,
+			PolicyNames: policyNames,
+			IsStatic:    true,
+		}
+		for _, action := range ident.Actions {
+			pbIdent.Actions = append(pbIdent.Actions, string(action))
+		}
+		for _, cred := range ident.Credentials {
+			pbIdent.Credentials = append(pbIdent.Credentials, &iam_pb.Credential{
+				AccessKey: cred.AccessKey,
+				SecretKey: cred.SecretKey,
+				Status:    cred.Status,
+			})
+		}
+		if ident.Account != nil {
+			pbIdent.Account = &iam_pb.Account{
+				Id:           ident.Account.Id,
+				DisplayName:  ident.Account.DisplayName,
+				EmailAddress: ident.Account.EmailAddress,
+			}
+		}
+		result = append(result, pbIdent)
+	}
+	return result
 }
 
 func (iam *IdentityAccessManagement) lookupByAccessKey(accessKey string) (identity *Identity, cred *Credential, found bool) {

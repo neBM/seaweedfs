@@ -197,6 +197,9 @@ message FuseAttributes {
     bytes md5 = 14;
     uint32 rdev = 16;
     uint64 inode = 17;
+    int64 ctime = 18; // unix time in seconds, inode change time
+    int32 mtime_ns = 19; // nanosecond component of mtime (0-999999999)
+    int32 ctime_ns = 20; // nanosecond component of ctime (0-999999999)
 }
 
 message CreateEntryRequest {
@@ -294,6 +297,7 @@ message AssignVolumeRequest {
     string rack = 7;
     string data_node = 9;
     string disk_type = 8;
+    uint64 expected_data_size = 10; // hint for size-aware volume selection
 }
 
 message AssignVolumeResponse {

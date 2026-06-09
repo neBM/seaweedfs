@@ -72,7 +72,11 @@ func (wfs *WFS) Link(cancel <-chan struct{}, in *fuse.LinkIn, name string, out *
 	}
 
 	// CreateLink 1.2 : update new file to hardlink mode
-	oldEntry.Attributes.Mtime = time.Now().Unix()
+	linkNow := time.Now()
+	oldEntry.Attributes.Mtime = linkNow.Unix()
+	oldEntry.Attributes.MtimeNs = int32(linkNow.Nanosecond())
+	oldEntry.Attributes.Ctime = linkNow.Unix()
+	oldEntry.Attributes.CtimeNs = int32(linkNow.Nanosecond())
 	request := &filer_pb.CreateEntryRequest{
 		Directory: string(newParentPath),
 		Entry: &filer_pb.Entry{
@@ -127,6 +131,7 @@ func (wfs *WFS) Link(cancel <-chan struct{}, in *fuse.LinkIn, name string, out *
 				glog.Warningf("link %s: best-effort metadata apply failed: %v", newParentPath.Child(name), applyErr)
 				wfs.inodeToPath.InvalidateChildrenCache(newParentPath)
 			}
+			wfs.touchDirMtimeCtimeBest(newParentPath)
 		}
 	}
 

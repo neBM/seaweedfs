@@ -82,6 +82,7 @@ type FilerOption struct {
 	AllowedOrigins            []string
 	ExposeDirectoryData       bool
 	TusBasePath               string
+	S3ConfigFile              string // optional path to static S3 identity config file
 	CredentialManager         *credential.CredentialManager
 }
 
@@ -98,7 +99,6 @@ type FilerServer struct {
 
 	filer_pb.UnimplementedSeaweedFilerServer
 	option         *FilerOption
-	secret         security.SigningKey
 	filer          *filer.Filer
 	filerGuard     *security.Guard
 	volumeGuard    *security.Guard
@@ -246,6 +246,10 @@ func NewFilerServer(defaultMux, readonlyMux *http.ServeMux, option *FilerOption)
 		if err := fs.filer.MaybeBootstrapFromOnePeer(option.Host, existingNodes, startFromTime); err != nil {
 			glog.Fatalf("%s bootstrap from %+v: %v", option.Host, existingNodes, err)
 		}
+	}
+	v.SetDefault("filer.options.s3.empty_folder_cleanup_delay", "2m")
+	if d, err := time.ParseDuration(v.GetString("filer.options.s3.empty_folder_cleanup_delay")); err == nil {
+		fs.filer.EmptyFolderCleanupDelay = d
 	}
 	fs.filer.AggregateFromPeers(option.Host, existingNodes, startFromTime)
 
