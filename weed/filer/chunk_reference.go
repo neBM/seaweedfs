@@ -108,19 +108,17 @@ func (f *Filer) CheckChunkReferences(ctx context.Context, fileIds []string, incl
 
 func (f *Filer) CheckChunkReferencesForVolume(ctx context.Context, fileIds []string, includePaths bool, volumeId uint32, presentFileKeys []uint64) (map[string]*filer_pb.ChunkReferenceStatus, []string, error) {
 	statuses := make(map[string]*filer_pb.ChunkReferenceStatus, len(fileIds))
-	needed := make(map[string]struct{}, len(fileIds))
 	for _, fileId := range fileIds {
 		if fileId == "" {
 			continue
 		}
 		statuses[fileId] = &filer_pb.ChunkReferenceStatus{}
-		needed[fileId] = struct{}{}
 	}
 	presentKeys := make(map[uint64]struct{}, len(presentFileKeys))
 	for _, key := range presentFileKeys {
 		presentKeys[key] = struct{}{}
 	}
-	if len(needed) == 0 && volumeId == 0 {
+	if len(statuses) == 0 && volumeId == 0 {
 		return statuses, nil, nil
 	}
 
@@ -132,6 +130,9 @@ func (f *Filer) CheckChunkReferencesForVolume(ctx context.Context, fileIds []str
 		}
 	}
 
+	// Persistent metadata references are protected at the metadata owner boundary
+	// by entry revisions. This guard only protects active chunk leases so volume
+	// deletes and compactions do not recursively scan the entire filer namespace.
 	missing := make(map[string]struct{})
 	if volumeId > 0 && f.ChunkLeases != nil {
 		for _, fileId := range f.ChunkLeases.ActiveFileIdsForVolume(volumeId) {
@@ -141,9 +142,6 @@ func (f *Filer) CheckChunkReferencesForVolume(ctx context.Context, fileIds []str
 		}
 	}
 
-	if err := f.walkChunkReferences(ctx, "/", needed, includePaths, statuses, volumeId, presentKeys, missing); err != nil {
-		return nil, nil, err
-	}
 	return statuses, sortedMissingFileIds(missing), nil
 }
 
