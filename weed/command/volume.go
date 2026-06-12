@@ -2,6 +2,7 @@ package command
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	httppprof "net/http/pprof"
 	"os"
@@ -296,7 +297,7 @@ func (v VolumeServerOptions) startVolumeServer(volumeFolders, maxVolumeCounts, v
 		*v.readBufferSizeMB,
 		*v.ldbTimeout,
 	)
-	volumeServer.SetChunkReferenceGuard(pb.ServerAddresses(*v.filersString).ToAddresses())
+	volumeServer.SetChunkReferenceGuard(parseFilerGrpcAddresses(*v.filersString))
 	// starting grpc server
 	grpcS := v.startGrpcService(volumeServer)
 
@@ -343,6 +344,36 @@ func (v VolumeServerOptions) startVolumeServer(volumeFolders, maxVolumeCounts, v
 		}
 	}
 
+}
+
+func parseFilerGrpcAddresses(filers string) []pb.ServerAddress {
+	if strings.TrimSpace(filers) == "" {
+		return nil
+	}
+	var addresses []pb.ServerAddress
+	for _, raw := range strings.Split(filers, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		portsSepIndex := strings.LastIndex(raw, ":")
+		if portsSepIndex >= 0 && strings.LastIndex(raw[portsSepIndex+1:], ".") >= 0 {
+			addresses = append(addresses, pb.ServerAddress(raw))
+			continue
+		}
+		host, portText, err := net.SplitHostPort(raw)
+		if err != nil {
+			addresses = append(addresses, pb.ServerAddress(raw))
+			continue
+		}
+		grpcPort, err := strconv.Atoi(portText)
+		if err != nil {
+			addresses = append(addresses, pb.ServerAddress(raw))
+			continue
+		}
+		addresses = append(addresses, pb.NewServerAddressWithGrpcPort(util.JoinHostPort(host, grpcPort), grpcPort))
+	}
+	return addresses
 }
 
 func parseVolumeTags(tagsArg string, folderCount int) [][]string {
