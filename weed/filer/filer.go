@@ -345,6 +345,7 @@ func (f *Filer) ensureParentDirectoryEntry(ctx context.Context, entry *Entry, di
 func (f *Filer) UpdateEntry(ctx context.Context, oldEntry, entry *Entry) (err error) {
 	if oldEntry != nil {
 		entry.Attr.Crtime = oldEntry.Attr.Crtime
+		entry.Revision = oldEntry.Revision
 		if oldEntry.IsDirectory() && !entry.IsDirectory() {
 			glog.ErrorfCtx(ctx, "existing %s is a directory", oldEntry.FullPath)
 			return fmt.Errorf("%s: %w", oldEntry.FullPath, filer_pb.ErrExistingIsDirectory)

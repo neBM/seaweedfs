@@ -46,6 +46,10 @@ type Entry struct {
 	Remote             *filer_pb.RemoteEntry
 	Quota              int64
 	WORMEnforcedAtTsNs int64
+
+	// Revision is owned by revision-aware filer stores. It is not part of the
+	// serialized entry metadata blob; it protects that blob from stale rewrites.
+	Revision int64
 }
 
 func (entry *Entry) Size() uint64 {
@@ -74,6 +78,8 @@ func (entry *Entry) ShallowClone() *Entry {
 	newEntry.Content = entry.Content
 	newEntry.Remote = entry.Remote
 	newEntry.Quota = entry.Quota
+	newEntry.WORMEnforcedAtTsNs = entry.WORMEnforcedAtTsNs
+	newEntry.Revision = entry.Revision
 
 	return newEntry
 }

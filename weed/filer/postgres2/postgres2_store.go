@@ -58,6 +58,7 @@ func (store *PostgresStore2) Initialize(configuration util.Configuration, prefix
 func (store *PostgresStore2) initialize(createTable, upsertQuery string, enableUpsert bool, user, password, hostname string, port int, database, schema, sslmode, sslcert, sslkey, sslrootcert, sslcrl string, pgbouncerCompatible bool, maxIdle, maxOpen, maxLifetimeSeconds int) (err error) {
 
 	store.SupportBucketTable = true
+	store.StrictEntryRevision = true
 	if !enableUpsert {
 		upsertQuery = ""
 	}

@@ -26,10 +26,20 @@ type SqlGenerator interface {
 	GetSqlDropTable(tableName string) string
 }
 
+type EntryRevisionSqlGenerator interface {
+	GetSqlInsertWithRevision(tableName string) string
+	GetSqlUpdateWithRevision(tableName string) string
+	GetSqlFindWithRevision(tableName string) string
+	GetSqlListExclusiveWithRevision(tableName string) string
+	GetSqlListInclusiveWithRevision(tableName string) string
+	GetSqlEnsureEntryRevisionColumn(tableName string) string
+}
+
 type AbstractSqlStore struct {
 	SqlGenerator
 	DB                     *sql.DB
 	SupportBucketTable     bool
+	StrictEntryRevision    bool
 	dbs                    map[string]bool
 	dbsLock                sync.Mutex
 	RetryableErrorCallback func(err error) bool
@@ -66,6 +76,11 @@ func (store *AbstractSqlStore) OnBucketDeletion(bucket string) {
 const (
 	DEFAULT_TABLE = "filemeta"
 )
+
+func (store *AbstractSqlStore) entryRevisionGenerator() (EntryRevisionSqlGenerator, bool) {
+	gen, ok := store.SqlGenerator.(EntryRevisionSqlGenerator)
+	return gen, store.StrictEntryRevision && ok
+}
 
 type TxOrDB interface {
 	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
@@ -170,6 +185,16 @@ func (store *AbstractSqlStore) InsertEntry(ctx context.Context, entry *filer.Ent
 			meta = util.MaybeGzipData(meta)
 		}
 		sqlInsert := "insert"
+		if gen, ok := store.entryRevisionGenerator(); ok {
+			var nextRevision int64
+			err = db.QueryRowContext(ctx, gen.GetSqlInsertWithRevision(bucket), util.HashStringToLong(dir), name, dir, meta).Scan(&nextRevision)
+			if err != nil {
+				return fmt.Errorf("%s %s: %w", sqlInsert, entry.FullPath, err)
+			}
+			entry.Revision = nextRevision
+			return nil
+		}
+
 		res, err := db.ExecContext(ctx, store.GetSqlInsert(bucket), util.HashStringToLong(dir), name, dir, meta)
 		if err != nil && strings.Contains(strings.ToLower(err.Error()), "duplicate entry") {
 			// now the insert failed possibly due to duplication constraints
@@ -213,6 +238,19 @@ func (store *AbstractSqlStore) UpdateEntry(ctx context.Context, entry *filer.Ent
 			return fmt.Errorf("encode %s: %w", entry.FullPath, err)
 		}
 
+		if gen, ok := store.entryRevisionGenerator(); ok {
+			var nextRevision int64
+			err = db.QueryRowContext(ctx, gen.GetSqlUpdateWithRevision(bucket), meta, util.HashStringToLong(dir), name, dir, entry.Revision).Scan(&nextRevision)
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("update %s: %w", entry.FullPath, filer.ErrMetadataRevisionMismatch)
+			}
+			if err != nil {
+				return fmt.Errorf("update %s: %w", entry.FullPath, err)
+			}
+			entry.Revision = nextRevision
+			return nil
+		}
+
 		res, err := db.ExecContext(ctx, store.GetSqlUpdate(bucket), meta, util.HashStringToLong(dir), name, dir)
 		if err != nil {
 			return fmt.Errorf("update %s: %w", entry.FullPath, err)
@@ -242,18 +280,30 @@ func (store *AbstractSqlStore) FindEntry(ctx context.Context, fullpath util.Full
 	}
 
 	dir, name := shortPath.DirAndName()
-	row := db.QueryRowContext(ctx, store.GetSqlFind(bucket), util.HashStringToLong(dir), name, dir)
+	sqlFind := store.GetSqlFind(bucket)
+	if gen, ok := store.entryRevisionGenerator(); ok {
+		sqlFind = gen.GetSqlFindWithRevision(bucket)
+	}
+	row := db.QueryRowContext(ctx, sqlFind, util.HashStringToLong(dir), name, dir)
 
 	var data []byte
-	if err := row.Scan(&data); err != nil {
-		if err == sql.ErrNoRows {
+	var revision int64
+	var scanErr error
+	if _, ok := store.entryRevisionGenerator(); ok {
+		scanErr = row.Scan(&data, &revision)
+	} else {
+		scanErr = row.Scan(&data)
+	}
+	if scanErr != nil {
+		if scanErr == sql.ErrNoRows {
 			return nil, filer_pb.ErrNotFound
 		}
-		return nil, fmt.Errorf("find %s: %v", fullpath, err)
+		return nil, fmt.Errorf("find %s: %v", fullpath, scanErr)
 	}
 
 	entry := &filer.Entry{
 		FullPath: fullpath,
+		Revision: revision,
 	}
 	if err := entry.DecodeAttributesAndChunks(util.MaybeDecompressData(data)); err != nil {
 		return entry, fmt.Errorf("decode %s : %v", entry.FullPath, err)
@@ -347,6 +397,14 @@ func (store *AbstractSqlStore) ListDirectoryPrefixedEntries(ctx context.Context,
 	if includeStartFile {
 		sqlText = store.GetSqlListInclusive(bucket)
 	}
+	hasRevision := false
+	if gen, ok := store.entryRevisionGenerator(); ok {
+		hasRevision = true
+		sqlText = gen.GetSqlListExclusiveWithRevision(bucket)
+		if includeStartFile {
+			sqlText = gen.GetSqlListInclusiveWithRevision(bucket)
+		}
+	}
 
 	rows, err := db.QueryContext(ctx, sqlText, util.HashStringToLong(string(shortPath)), startFileName, string(shortPath), prefix+"%", limit+1)
 	if err != nil {
@@ -357,7 +415,13 @@ func (store *AbstractSqlStore) ListDirectoryPrefixedEntries(ctx context.Context,
 	for rows.Next() {
 		var name string
 		var data []byte
-		if err = rows.Scan(&name, &data); err != nil {
+		var revision int64
+		if hasRevision {
+			err = rows.Scan(&name, &data, &revision)
+		} else {
+			err = rows.Scan(&name, &data)
+		}
+		if err != nil {
 			glog.V(0).InfofCtx(ctx, "scan %s : %v", dirPath, err)
 			return lastFileName, fmt.Errorf("scan %s: %v", dirPath, err)
 		}
@@ -365,6 +429,7 @@ func (store *AbstractSqlStore) ListDirectoryPrefixedEntries(ctx context.Context,
 
 		entry := &filer.Entry{
 			FullPath: util.NewFullPath(string(dirPath), name),
+			Revision: revision,
 		}
 		if err = entry.DecodeAttributesAndChunks(util.MaybeDecompressData(data)); err != nil {
 			glog.V(0).InfofCtx(ctx, "scan decode %s : %v", entry.FullPath, err)
@@ -405,8 +470,14 @@ func (store *AbstractSqlStore) CreateTable(ctx context.Context, bucket string) e
 	if !store.SupportBucketTable {
 		return nil
 	}
-	_, err := store.DB.ExecContext(ctx, store.SqlGenerator.GetSqlCreateTable(bucket))
-	return err
+	if _, err := store.DB.ExecContext(ctx, store.SqlGenerator.GetSqlCreateTable(bucket)); err != nil {
+		return err
+	}
+	if gen, ok := store.entryRevisionGenerator(); ok {
+		_, err := store.DB.ExecContext(ctx, gen.GetSqlEnsureEntryRevisionColumn(bucket))
+		return err
+	}
+	return nil
 }
 
 func (store *AbstractSqlStore) deleteTable(ctx context.Context, bucket string) error {

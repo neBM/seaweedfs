@@ -15,6 +15,7 @@ var (
 	ErrUnsupportedSuperLargeDirectoryListing = errors.New("unsupported super large directory listing")
 	ErrKvNotImplemented                      = errors.New("kv not implemented yet")
 	ErrKvNotFound                            = errors.New("kv: not found")
+	ErrMetadataRevisionMismatch              = errors.New("metadata revision mismatch")
 )
 
 type ListEachEntryFunc func(entry *Entry) (bool, error)
