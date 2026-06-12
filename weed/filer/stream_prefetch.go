@@ -102,7 +102,7 @@ func streamChunksPrefetched(
 				defer func() { <-sem }() // release semaphore
 				defer close(res.done)
 
-				written, err := retriedStreamFetchChunkData(
+				written, err := fetchStreamChunkDataOnce(
 					localCtx, pw, urls, jwt,
 					cv.CipherKey, cv.IsGzipped, cv.IsFullChunk(),
 					cv.OffsetInChunk, int(cv.ViewSize),
@@ -265,7 +265,7 @@ func retryWithCacheInvalidation(
 
 	glog.V(0).InfofCtx(ctx, "retrying read chunk %s with new locations: %v", chunkView.FileId, newUrlStrings)
 	jwt := jwtFunc(chunkView.FileId)
-	_, err := retriedStreamFetchChunkData(
+	_, err := fetchStreamChunkDataOnce(
 		ctx, writer, newUrlStrings, jwt,
 		chunkView.CipherKey, chunkView.IsGzipped, chunkView.IsFullChunk(),
 		chunkView.OffsetInChunk, int(chunkView.ViewSize),

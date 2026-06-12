@@ -107,7 +107,7 @@ func fetchWholeChunk(ctx context.Context, bytesBuffer *bytes.Buffer, lookupFileI
 	if masterClient != nil {
 		jwt := JwtForVolumeServer(fileId)
 		_, err := ReadChunkWithReLookup(ctx, masterClient, fileId, func(urlStrings []string) (int, error) {
-			n, e := retriedStreamFetchChunkData(ctx, bytesBuffer, urlStrings, jwt, cipherKey, isGzipped, true, 0, 0)
+			n, e := fetchStreamChunkDataOnce(ctx, bytesBuffer, urlStrings, jwt, cipherKey, isGzipped, true, 0, 0)
 			return int(n), e
 		})
 		return err
@@ -128,7 +128,7 @@ func fetchWholeChunk(ctx context.Context, bytesBuffer *bytes.Buffer, lookupFileI
 func fetchChunkRange(ctx context.Context, buffer []byte, lookupFileIdFn wdclient.LookupFileIdFunctionType, masterClient wdclient.HasLookupFileIdFunction, fileId string, cipherKey []byte, isGzipped bool, offset int64) (int, error) {
 	if masterClient != nil {
 		return ReadChunkWithReLookup(ctx, masterClient, fileId, func(urlStrings []string) (int, error) {
-			return util_http.RetriedFetchChunkData(ctx, buffer, urlStrings, cipherKey, isGzipped, false, offset, fileId)
+			return util_http.FetchChunkDataOnce(ctx, buffer, urlStrings, cipherKey, isGzipped, false, offset, fileId)
 		})
 	}
 	urlStrings, err := lookupFileIdFn(ctx, fileId)
@@ -222,6 +222,61 @@ func retriedStreamFetchChunkData(ctx context.Context, writer io.Writer, urlStrin
 
 	return int64(totalWritten), err
 
+}
+
+// fetchStreamChunkDataOnce tries the current volume-server URL set once,
+// without sleeping on the same stale locations. The vidMap relookup owner
+// wraps this and decides whether to invalidate and retry with fresh locations.
+func fetchStreamChunkDataOnce(ctx context.Context, writer io.Writer, urlStrings []string, jwt string, cipherKey []byte, isGzipped bool, isFullChunk bool, offset int64, size int) (written int64, err error) {
+	var shouldRetry bool
+	var totalWritten int
+
+	for _, urlString := range urlStrings {
+		select {
+		case <-ctx.Done():
+			return int64(totalWritten), ctx.Err()
+		default:
+		}
+
+		var localProcessed int
+		var writeErr error
+		shouldRetry, err = util_http.ReadUrlAsStream(ctx, urlString+"?readDeleted=true", jwt, cipherKey, isGzipped, isFullChunk, offset, size, func(data []byte) {
+			select {
+			case <-ctx.Done():
+				writeErr = ctx.Err()
+				return
+			default:
+			}
+
+			if totalWritten > localProcessed {
+				toBeSkipped := totalWritten - localProcessed
+				if len(data) <= toBeSkipped {
+					localProcessed += len(data)
+					return
+				}
+				data = data[toBeSkipped:]
+				localProcessed += toBeSkipped
+			}
+			var writtenCount int
+			writtenCount, writeErr = writer.Write(data)
+			localProcessed += writtenCount
+			totalWritten += writtenCount
+		})
+		if !shouldRetry {
+			break
+		}
+		if writeErr != nil {
+			err = writeErr
+			break
+		}
+		if err != nil {
+			glog.V(0).InfofCtx(ctx, "read %s failed, err: %v", urlString, err)
+		} else {
+			break
+		}
+	}
+
+	return int64(totalWritten), err
 }
 
 func MaybeManifestize(saveFunc SaveDataAsChunkFunctionType, inputChunks []*filer_pb.FileChunk) (chunks []*filer_pb.FileChunk, err error) {

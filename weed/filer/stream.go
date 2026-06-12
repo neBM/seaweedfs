@@ -188,7 +188,7 @@ func PrepareStreamContentWithThrottler(ctx context.Context, masterClient wdclien
 			jwt := jwtFunc(chunkView.FileId)
 			_, err := ReadChunkWithReLookup(ctx, masterClient, chunkView.FileId,
 				func(urls []string) (int, error) {
-					n, e := retriedStreamFetchChunkData(ctx, writer, urls, jwt, chunkView.CipherKey, chunkView.IsGzipped, chunkView.IsFullChunk(), chunkView.OffsetInChunk, int(chunkView.ViewSize))
+					n, e := fetchStreamChunkDataOnce(ctx, writer, urls, jwt, chunkView.CipherKey, chunkView.IsGzipped, chunkView.IsFullChunk(), chunkView.OffsetInChunk, int(chunkView.ViewSize))
 					return int(n), e
 				})
 
@@ -319,7 +319,7 @@ func ReadAll(ctx context.Context, buffer []byte, masterClient *wdclient.MasterCl
 		chunkView := x.Value
 		n, err := ReadChunkWithReLookup(ctx, masterClient, chunkView.FileId,
 			func(urls []string) (int, error) {
-				return util_http.RetriedFetchChunkData(ctx, buffer[idx:idx+int(chunkView.ViewSize)], urls, chunkView.CipherKey, chunkView.IsGzipped, chunkView.IsFullChunk(), chunkView.OffsetInChunk, chunkView.FileId)
+				return util_http.FetchChunkDataOnce(ctx, buffer[idx:idx+int(chunkView.ViewSize)], urls, chunkView.CipherKey, chunkView.IsGzipped, chunkView.IsFullChunk(), chunkView.OffsetInChunk, chunkView.FileId)
 			})
 		if err != nil {
 			return err

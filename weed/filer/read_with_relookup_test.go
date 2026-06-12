@@ -3,10 +3,15 @@ package filer
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/seaweedfs/seaweedfs/weed/util"
+	util_http "github.com/seaweedfs/seaweedfs/weed/util/http"
 	"github.com/seaweedfs/seaweedfs/weed/wdclient"
 )
 
@@ -322,5 +327,91 @@ func TestReadChunkWithReLookup_ConcurrentInvalidation(t *testing.T) {
 	// acceptable (documented in spec).
 	if atomic.LoadInt32(&mc.invalidateCalls) < 1 {
 		t.Errorf("invalidateCalls = %d, want >= 1", mc.invalidateCalls)
+	}
+}
+
+func TestFetchChunkRangeReLookupDoesNotRetryStaleUrlsBeforeInvalidation(t *testing.T) {
+	oldRetryWaitTime := util.RetryWaitTime
+	util.RetryWaitTime = 2 * time.Second
+	defer func() {
+		util.RetryWaitTime = oldRetryWaitTime
+	}()
+
+	var staleHits int32
+	stale := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&staleHits, 1)
+		http.Error(w, "old volume server", http.StatusInternalServerError)
+	}))
+	defer stale.Close()
+
+	fresh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("fresh"))
+	}))
+	defer fresh.Close()
+
+	mc := &stubMasterClient{
+		lookups: []stubLookupResult{
+			{urls: []string{stale.URL}},
+			{urls: []string{fresh.URL}},
+		},
+	}
+
+	buffer := make([]byte, len("fresh"))
+	n, err := fetchChunkRange(context.Background(), buffer, nil, mc, "1,abc", nil, false, 0)
+	if err != nil {
+		t.Fatalf("expected success after stale-url invalidation and relookup, got %v", err)
+	}
+	if n != len("fresh") || string(buffer) != "fresh" {
+		t.Fatalf("fetched %d bytes %q, want %d bytes %q", n, string(buffer), len("fresh"), "fresh")
+	}
+	if got := atomic.LoadInt32(&staleHits); got != 1 {
+		t.Fatalf("stale URL hits = %d, want 1 before invalidation/relookup", got)
+	}
+	if got := atomic.LoadInt32(&mc.invalidateCalls); got != 1 {
+		t.Fatalf("invalidateCalls = %d, want 1", got)
+	}
+}
+
+func TestFullChunkReLookupDoesNotRetryStaleUrlsBeforeInvalidation(t *testing.T) {
+	oldRetryWaitTime := util.RetryWaitTime
+	util.RetryWaitTime = 2 * time.Second
+	defer func() {
+		util.RetryWaitTime = oldRetryWaitTime
+	}()
+
+	var staleHits int32
+	stale := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&staleHits, 1)
+		http.Error(w, "old volume server", http.StatusInternalServerError)
+	}))
+	defer stale.Close()
+
+	fresh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("fresh"))
+	}))
+	defer fresh.Close()
+
+	mc := &stubMasterClient{
+		lookups: []stubLookupResult{
+			{urls: []string{stale.URL}},
+			{urls: []string{fresh.URL}},
+		},
+	}
+
+	buffer := make([]byte, len("fresh"))
+	n, err := ReadChunkWithReLookup(context.Background(), mc, "1,abc", func(urls []string) (int, error) {
+		return util_http.FetchChunkDataOnce(context.Background(), buffer, urls, nil, false, true, 0, "1,abc")
+	})
+	if err != nil {
+		t.Fatalf("expected full-chunk success after stale-url invalidation and relookup, got %v", err)
+	}
+	if n != len("fresh") || string(buffer) != "fresh" {
+		t.Fatalf("fetched %d bytes %q, want %d bytes %q", n, string(buffer), len("fresh"), "fresh")
+	}
+	if got := atomic.LoadInt32(&staleHits); got != 1 {
+		t.Fatalf("stale URL hits = %d, want 1 before invalidation/relookup", got)
+	}
+	if got := atomic.LoadInt32(&mc.invalidateCalls); got != 1 {
+		t.Fatalf("invalidateCalls = %d, want 1", got)
 	}
 }

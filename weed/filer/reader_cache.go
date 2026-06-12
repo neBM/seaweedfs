@@ -209,7 +209,7 @@ func (s *SingleChunkCacher) startCaching() {
 		// This is the mount/CSI read path on rotating volume server IPs.
 		_, fetchErr = ReadChunkWithReLookup(context.Background(), s.parent.masterClient, s.chunkFileId,
 			func(urlStrings []string) (int, error) {
-				return util_http.RetriedFetchChunkData(context.Background(), data, urlStrings, s.cipherKey, s.isGzipped, true, 0, s.chunkFileId)
+				return util_http.FetchChunkDataOnce(context.Background(), data, urlStrings, s.cipherKey, s.isGzipped, true, 0, s.chunkFileId)
 			})
 	} else {
 		// Fallback for tests and callers that do not wire a master client:

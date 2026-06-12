@@ -588,6 +588,61 @@ func RetriedFetchChunkData(ctx context.Context, buffer []byte, urlStrings []stri
 
 }
 
+// FetchChunkDataOnce tries the current volume-server URL set once, without
+// sleeping or retrying the same stale locations. Callers that own vidMap
+// invalidation can use this to re-query fresh locations immediately.
+func FetchChunkDataOnce(ctx context.Context, buffer []byte, urlStrings []string, cipherKey []byte, isGzipped bool, isFullChunk bool, offset int64, fileId string) (n int, err error) {
+	loadJwtConfigOnce.Do(loadJwtConfig)
+	var jwt security.EncodedJwt
+	if len(jwtSigningReadKey) > 0 {
+		jwt = security.GenJwtForVolumeServer(
+			jwtSigningReadKey,
+			jwtSigningReadKeyExpires,
+			fileId,
+		)
+	}
+
+	if cipherKey == nil && !isGzipped && isFullChunk {
+		return fetchChunkDataDirectOnce(ctx, buffer, urlStrings, string(jwt))
+	}
+
+	var shouldRetry bool
+	for _, urlString := range urlStrings {
+		select {
+		case <-ctx.Done():
+			return n, ctx.Err()
+		default:
+		}
+
+		n = 0
+		if strings.Contains(urlString, "%") {
+			urlString = url.PathEscape(urlString)
+		}
+		shouldRetry, err = ReadUrlAsStream(ctx, urlString+"?readDeleted=true", string(jwt), cipherKey, isGzipped, isFullChunk, offset, len(buffer), func(data []byte) {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			if n < len(buffer) {
+				x := copy(buffer[n:], data)
+				n += x
+			}
+		})
+		if !shouldRetry {
+			break
+		}
+		if err != nil {
+			glog.V(0).InfofCtx(ctx, "read %s failed, err: %v", urlString, err)
+		} else {
+			break
+		}
+	}
+
+	return n, err
+}
+
 // retriedFetchChunkDataDirect reads chunk data directly into the buffer without
 // intermediate buffering. This reduces memory copies and improves throughput
 // for large chunk reads.
@@ -630,6 +685,29 @@ func retriedFetchChunkDataDirect(ctx context.Context, buffer []byte, urlStrings 
 		} else {
 			break
 		}
+	}
+
+	return n, err
+}
+
+func fetchChunkDataDirectOnce(ctx context.Context, buffer []byte, urlStrings []string, jwt string) (n int, err error) {
+	var shouldRetry bool
+
+	for _, urlString := range urlStrings {
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		default:
+		}
+
+		n, shouldRetry, err = readUrlDirectToBuffer(ctx, urlString+"?readDeleted=true", jwt, buffer)
+		if err == nil {
+			return n, nil
+		}
+		if !shouldRetry {
+			break
+		}
+		glog.V(0).InfofCtx(ctx, "read %s failed, err: %v", urlString, err)
 	}
 
 	return n, err
