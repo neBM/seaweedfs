@@ -54,6 +54,12 @@ func NewDirectoryHandleToInode() *DirectoryHandleToInode {
 	}
 }
 
+func (i *DirectoryHandleToInode) Count() int {
+	i.Lock()
+	defer i.Unlock()
+	return len(i.dir2inode)
+}
+
 func (wfs *WFS) AcquireDirectoryHandle() (DirectoryHandleId, *DirectoryHandle) {
 	fh := DirectoryHandleId(util.RandomUint64())
 

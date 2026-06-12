@@ -86,6 +86,37 @@ func TestHotRestartStatePendingAsyncFlushIsWorkerLocal(t *testing.T) {
 	}
 }
 
+func TestHotRestartStateSnapshotIsQuiescentWithoutWorkerLocalState(t *testing.T) {
+	wfs := newHotRestartStateTestWFS()
+
+	snapshot := wfs.HotRestartStateSnapshot()
+	if !snapshot.Quiescent() {
+		t.Fatalf("snapshot = %+v, want quiescent", snapshot)
+	}
+}
+
+func TestHotRestartStateSnapshotCountsQuiesceBlockers(t *testing.T) {
+	wfs := newHotRestartStateTestWFS()
+
+	_ = wfs.fhMap.AcquireFileHandle(wfs, 101, newHotRestartStateEntry(101))
+	_, _ = wfs.AcquireDirectoryHandle()
+	wfs.pendingAsyncFlush[101] = make(chan struct{})
+
+	snapshot := wfs.HotRestartStateSnapshot()
+	if snapshot.OpenFileHandles != 1 {
+		t.Fatalf("OpenFileHandles = %d, want 1", snapshot.OpenFileHandles)
+	}
+	if snapshot.OpenDirectoryHandles != 1 {
+		t.Fatalf("OpenDirectoryHandles = %d, want 1", snapshot.OpenDirectoryHandles)
+	}
+	if snapshot.PendingAsyncFlushes != 1 {
+		t.Fatalf("PendingAsyncFlushes = %d, want 1", snapshot.PendingAsyncFlushes)
+	}
+	if snapshot.Quiescent() {
+		t.Fatalf("snapshot = %+v, want non-quiescent", snapshot)
+	}
+}
+
 func newHotRestartStateTestWFS() *WFS {
 	return &WFS{
 		option: &Option{

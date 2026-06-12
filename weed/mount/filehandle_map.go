@@ -38,6 +38,12 @@ func (i *FileHandleToInode) FindFileHandle(inode uint64) (fh *FileHandle, found 
 	return
 }
 
+func (i *FileHandleToInode) Count() int {
+	i.RLock()
+	defer i.RUnlock()
+	return len(i.inode2fh)
+}
+
 // MarkInodeRenamed sets isRenamed on any file handle associated with the
 // given inode.  This prevents the async flush from recreating a renamed
 // file's metadata under its old path.
