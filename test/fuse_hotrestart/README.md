@@ -13,10 +13,20 @@ the stack than SeaweedFS state handoff:
 - worker subprocess 1 serves a simple loopback filesystem over that inherited fd
 - worker subprocess 2 tries to attach to the same live fd after worker 1 exits
 
-The current expectation is that worker 1 succeeds and worker 2 does not become
-ready. If worker 2 ever does come up cleanly, the design assumptions for the
-durable restart path need to be revisited before the higher-level SeaweedFS
-state audit continues.
+This harness is intentionally pinned to the released `github.com/seaweedfs/go-fuse/v2`
+module version from `go.mod`. With that baseline, worker 1 succeeds and worker 2
+still reproduces the historical limitation.
+
+The current program state is now one layer above this:
+
+- a local go-fuse fork can adopt a live initialized fd and keep serving reopened access
+- stale open file handles still fail without explicit state handoff
+- generic `nodefs/pathfs` reopened reads can still crash after adoption
+- SeaweedFS `WFS` state continuity is now audited in `weed/mount/hotrestart_state_test.go`
+
+So this module is now the released-baseline harness, not the final owner-layer proof.
+Use it to confirm what unpatched go-fuse does, then continue the durable work in the
+go-fuse fork and `weed/mount`.
 
 Run it with:
 
