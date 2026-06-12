@@ -25,6 +25,7 @@ const (
 	SeaweedFiler_UpdateEntry_FullMethodName                     = "/filer_pb.SeaweedFiler/UpdateEntry"
 	SeaweedFiler_AppendToEntry_FullMethodName                   = "/filer_pb.SeaweedFiler/AppendToEntry"
 	SeaweedFiler_DeleteEntry_FullMethodName                     = "/filer_pb.SeaweedFiler/DeleteEntry"
+	SeaweedFiler_CheckChunkReferences_FullMethodName            = "/filer_pb.SeaweedFiler/CheckChunkReferences"
 	SeaweedFiler_AtomicRenameEntry_FullMethodName               = "/filer_pb.SeaweedFiler/AtomicRenameEntry"
 	SeaweedFiler_StreamRenameEntry_FullMethodName               = "/filer_pb.SeaweedFiler/StreamRenameEntry"
 	SeaweedFiler_StreamMutateEntry_FullMethodName               = "/filer_pb.SeaweedFiler/StreamMutateEntry"
@@ -58,6 +59,7 @@ type SeaweedFilerClient interface {
 	UpdateEntry(ctx context.Context, in *UpdateEntryRequest, opts ...grpc.CallOption) (*UpdateEntryResponse, error)
 	AppendToEntry(ctx context.Context, in *AppendToEntryRequest, opts ...grpc.CallOption) (*AppendToEntryResponse, error)
 	DeleteEntry(ctx context.Context, in *DeleteEntryRequest, opts ...grpc.CallOption) (*DeleteEntryResponse, error)
+	CheckChunkReferences(ctx context.Context, in *CheckChunkReferencesRequest, opts ...grpc.CallOption) (*CheckChunkReferencesResponse, error)
 	AtomicRenameEntry(ctx context.Context, in *AtomicRenameEntryRequest, opts ...grpc.CallOption) (*AtomicRenameEntryResponse, error)
 	StreamRenameEntry(ctx context.Context, in *StreamRenameEntryRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[StreamRenameEntryResponse], error)
 	StreamMutateEntry(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[StreamMutateEntryRequest, StreamMutateEntryResponse], error)
@@ -153,6 +155,16 @@ func (c *seaweedFilerClient) DeleteEntry(ctx context.Context, in *DeleteEntryReq
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DeleteEntryResponse)
 	err := c.cc.Invoke(ctx, SeaweedFiler_DeleteEntry_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *seaweedFilerClient) CheckChunkReferences(ctx context.Context, in *CheckChunkReferencesRequest, opts ...grpc.CallOption) (*CheckChunkReferencesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CheckChunkReferencesResponse)
+	err := c.cc.Invoke(ctx, SeaweedFiler_CheckChunkReferences_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -418,6 +430,7 @@ type SeaweedFilerServer interface {
 	UpdateEntry(context.Context, *UpdateEntryRequest) (*UpdateEntryResponse, error)
 	AppendToEntry(context.Context, *AppendToEntryRequest) (*AppendToEntryResponse, error)
 	DeleteEntry(context.Context, *DeleteEntryRequest) (*DeleteEntryResponse, error)
+	CheckChunkReferences(context.Context, *CheckChunkReferencesRequest) (*CheckChunkReferencesResponse, error)
 	AtomicRenameEntry(context.Context, *AtomicRenameEntryRequest) (*AtomicRenameEntryResponse, error)
 	StreamRenameEntry(*StreamRenameEntryRequest, grpc.ServerStreamingServer[StreamRenameEntryResponse]) error
 	StreamMutateEntry(grpc.BidiStreamingServer[StreamMutateEntryRequest, StreamMutateEntryResponse]) error
@@ -467,6 +480,9 @@ func (UnimplementedSeaweedFilerServer) AppendToEntry(context.Context, *AppendToE
 }
 func (UnimplementedSeaweedFilerServer) DeleteEntry(context.Context, *DeleteEntryRequest) (*DeleteEntryResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteEntry not implemented")
+}
+func (UnimplementedSeaweedFilerServer) CheckChunkReferences(context.Context, *CheckChunkReferencesRequest) (*CheckChunkReferencesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CheckChunkReferences not implemented")
 }
 func (UnimplementedSeaweedFilerServer) AtomicRenameEntry(context.Context, *AtomicRenameEntryRequest) (*AtomicRenameEntryResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method AtomicRenameEntry not implemented")
@@ -649,6 +665,24 @@ func _SeaweedFiler_DeleteEntry_Handler(srv interface{}, ctx context.Context, dec
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(SeaweedFilerServer).DeleteEntry(ctx, req.(*DeleteEntryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _SeaweedFiler_CheckChunkReferences_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CheckChunkReferencesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SeaweedFilerServer).CheckChunkReferences(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SeaweedFiler_CheckChunkReferences_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SeaweedFilerServer).CheckChunkReferences(ctx, req.(*CheckChunkReferencesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1018,6 +1052,10 @@ var SeaweedFiler_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteEntry",
 			Handler:    _SeaweedFiler_DeleteEntry_Handler,
+		},
+		{
+			MethodName: "CheckChunkReferences",
+			Handler:    _SeaweedFiler_CheckChunkReferences_Handler,
 		},
 		{
 			MethodName: "AtomicRenameEntry",

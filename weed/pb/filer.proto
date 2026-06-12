@@ -28,6 +28,9 @@ service SeaweedFiler {
     rpc DeleteEntry (DeleteEntryRequest) returns (DeleteEntryResponse) {
     }
 
+    rpc CheckChunkReferences (CheckChunkReferencesRequest) returns (CheckChunkReferencesResponse) {
+    }
+
     rpc AtomicRenameEntry (AtomicRenameEntryRequest) returns (AtomicRenameEntryResponse) {
     }
     rpc StreamRenameEntry (StreamRenameEntryRequest) returns (stream StreamRenameEntryResponse) {
@@ -265,6 +268,21 @@ message DeleteEntryRequest {
 message DeleteEntryResponse {
     string error = 1;
     SubscribeMetadataResponse metadata_event = 2;
+}
+
+message CheckChunkReferencesRequest {
+    repeated string file_ids = 1;
+    bool include_paths = 2;
+}
+
+message ChunkReferenceStatus {
+    bool referenced = 1;
+    bool leased = 2;
+    repeated string paths = 3;
+}
+
+message CheckChunkReferencesResponse {
+    map<string, ChunkReferenceStatus> chunk_status = 1;
 }
 
 message AtomicRenameEntryRequest {

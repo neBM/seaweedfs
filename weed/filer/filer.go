@@ -61,6 +61,7 @@ type Filer struct {
 	MaxFilenameLength       uint32
 	deletionQuit            chan struct{}
 	DeletionRetryQueue      *DeletionRetryQueue
+	ChunkLeases             *ChunkLeaseManager
 	EmptyFolderCleaner      *empty_folder_cleanup.EmptyFolderCleaner
 	EmptyFolderCleanupDelay time.Duration
 }
@@ -77,6 +78,7 @@ func NewFiler(masters pb.ServerDiscovery, grpcDialOption grpc.DialOption, filerH
 		MaxFilenameLength:   maxFilenameLength,
 		deletionQuit:        make(chan struct{}),
 		DeletionRetryQueue:  NewDeletionRetryQueue(),
+		ChunkLeases:         NewChunkLeaseManager(),
 	}
 	if f.UniqueFilerId < 0 {
 		f.UniqueFilerId = -f.UniqueFilerId

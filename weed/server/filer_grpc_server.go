@@ -190,6 +190,7 @@ func (fs *FilerServer) CreateEntry(ctx context.Context, req *filer_pb.CreateEntr
 	createErr := fs.filer.CreateEntryWithExpectedRevision(ctx, newEntry, req.OExcl, req.IsFromOtherCluster, req.Signatures, req.SkipCheckParentDirectory, so.MaxFileNameLength, req.ExpectedEntryRevision)
 
 	if createErr == nil {
+		fs.filer.ReleaseChunkLeases(ctx, chunks)
 		fs.filer.DeleteChunksNotRecursive(garbage)
 		resp.MetadataEvent = eventSink.Last()
 	} else {
@@ -250,6 +251,7 @@ func (fs *FilerServer) UpdateEntry(ctx context.Context, req *filer_pb.UpdateEntr
 	ctx, eventSink := filer.WithMetadataEventSink(ctx)
 	resp := &filer_pb.UpdateEntryResponse{}
 	if err = fs.filer.UpdateEntryWithExpectedRevision(ctx, entry, newEntry, req.ExpectedEntryRevision); err == nil {
+		fs.filer.ReleaseChunkLeases(ctx, chunks)
 		fs.filer.DeleteChunksNotRecursive(garbage)
 
 		fs.filer.NotifyUpdateEvent(ctx, entry, newEntry, true, req.IsFromOtherCluster, req.Signatures)
@@ -263,6 +265,16 @@ func (fs *FilerServer) UpdateEntry(ctx context.Context, req *filer_pb.UpdateEntr
 	}
 
 	return resp, err
+}
+
+func (fs *FilerServer) CheckChunkReferences(ctx context.Context, req *filer_pb.CheckChunkReferencesRequest) (*filer_pb.CheckChunkReferencesResponse, error) {
+	chunkStatus, err := fs.filer.CheckChunkReferences(ctx, req.FileIds, req.IncludePaths)
+	if err != nil {
+		return nil, err
+	}
+	return &filer_pb.CheckChunkReferencesResponse{
+		ChunkStatus: chunkStatus,
+	}, nil
 }
 
 func validateUpdateEntryPreconditions(entry *filer.Entry, expectedExtended map[string][]byte, expectedRevision *int64) error {
@@ -420,6 +432,7 @@ func (fs *FilerServer) AssignVolume(ctx context.Context, req *filer_pb.AssignVol
 		glog.V(3).InfofCtx(ctx, "AssignVolume error: %v", assignResult.Error)
 		return &filer_pb.AssignVolumeResponse{Error: fmt.Sprintf("assign volume result: %v", assignResult.Error)}, nil
 	}
+	fs.filer.LeaseChunks([]string{assignResult.Fid})
 
 	return &filer_pb.AssignVolumeResponse{
 		FileId: assignResult.Fid,
