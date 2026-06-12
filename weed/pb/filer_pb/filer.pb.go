@@ -454,6 +454,7 @@ type Entry struct {
 	RemoteEntry        *RemoteEntry           `protobuf:"bytes,10,opt,name=remote_entry,json=remoteEntry,proto3" json:"remote_entry,omitempty"`
 	Quota              int64                  `protobuf:"varint,11,opt,name=quota,proto3" json:"quota,omitempty"` // for bucket only. Positive/Negative means enabled/disabled.
 	WormEnforcedAtTsNs int64                  `protobuf:"varint,12,opt,name=worm_enforced_at_ts_ns,json=wormEnforcedAtTsNs,proto3" json:"worm_enforced_at_ts_ns,omitempty"`
+	EntryRevision      *int64                 `protobuf:"varint,13,opt,name=entry_revision,json=entryRevision,proto3,oneof" json:"entry_revision,omitempty"` // store-owned metadata revision for stale-write protection
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -561,6 +562,13 @@ func (x *Entry) GetQuota() int64 {
 func (x *Entry) GetWormEnforcedAtTsNs() int64 {
 	if x != nil {
 		return x.WormEnforcedAtTsNs
+	}
+	return 0
+}
+
+func (x *Entry) GetEntryRevision() int64 {
+	if x != nil && x.EntryRevision != nil {
+		return *x.EntryRevision
 	}
 	return 0
 }
@@ -1125,6 +1133,7 @@ type CreateEntryRequest struct {
 	IsFromOtherCluster       bool                   `protobuf:"varint,4,opt,name=is_from_other_cluster,json=isFromOtherCluster,proto3" json:"is_from_other_cluster,omitempty"`
 	Signatures               []int32                `protobuf:"varint,5,rep,packed,name=signatures,proto3" json:"signatures,omitempty"`
 	SkipCheckParentDirectory bool                   `protobuf:"varint,6,opt,name=skip_check_parent_directory,json=skipCheckParentDirectory,proto3" json:"skip_check_parent_directory,omitempty"`
+	ExpectedEntryRevision    *int64                 `protobuf:"varint,7,opt,name=expected_entry_revision,json=expectedEntryRevision,proto3,oneof" json:"expected_entry_revision,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
@@ -1201,6 +1210,13 @@ func (x *CreateEntryRequest) GetSkipCheckParentDirectory() bool {
 	return false
 }
 
+func (x *CreateEntryRequest) GetExpectedEntryRevision() int64 {
+	if x != nil && x.ExpectedEntryRevision != nil {
+		return *x.ExpectedEntryRevision
+	}
+	return 0
+}
+
 type CreateEntryResponse struct {
 	state         protoimpl.MessageState     `protogen:"open.v1"`
 	Error         string                     `protobuf:"bytes,1,opt,name=error,proto3" json:"error,omitempty"` // kept for human readability + backward compat
@@ -1262,14 +1278,15 @@ func (x *CreateEntryResponse) GetErrorCode() FilerError {
 }
 
 type UpdateEntryRequest struct {
-	state              protoimpl.MessageState `protogen:"open.v1"`
-	Directory          string                 `protobuf:"bytes,1,opt,name=directory,proto3" json:"directory,omitempty"`
-	Entry              *Entry                 `protobuf:"bytes,2,opt,name=entry,proto3" json:"entry,omitempty"`
-	IsFromOtherCluster bool                   `protobuf:"varint,3,opt,name=is_from_other_cluster,json=isFromOtherCluster,proto3" json:"is_from_other_cluster,omitempty"`
-	Signatures         []int32                `protobuf:"varint,4,rep,packed,name=signatures,proto3" json:"signatures,omitempty"`
-	ExpectedExtended   map[string][]byte      `protobuf:"bytes,5,rep,name=expected_extended,json=expectedExtended,proto3" json:"expected_extended,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	Directory             string                 `protobuf:"bytes,1,opt,name=directory,proto3" json:"directory,omitempty"`
+	Entry                 *Entry                 `protobuf:"bytes,2,opt,name=entry,proto3" json:"entry,omitempty"`
+	IsFromOtherCluster    bool                   `protobuf:"varint,3,opt,name=is_from_other_cluster,json=isFromOtherCluster,proto3" json:"is_from_other_cluster,omitempty"`
+	Signatures            []int32                `protobuf:"varint,4,rep,packed,name=signatures,proto3" json:"signatures,omitempty"`
+	ExpectedExtended      map[string][]byte      `protobuf:"bytes,5,rep,name=expected_extended,json=expectedExtended,proto3" json:"expected_extended,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	ExpectedEntryRevision *int64                 `protobuf:"varint,6,opt,name=expected_entry_revision,json=expectedEntryRevision,proto3,oneof" json:"expected_entry_revision,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *UpdateEntryRequest) Reset() {
@@ -1335,6 +1352,13 @@ func (x *UpdateEntryRequest) GetExpectedExtended() map[string][]byte {
 		return x.ExpectedExtended
 	}
 	return nil
+}
+
+func (x *UpdateEntryRequest) GetExpectedEntryRevision() int64 {
+	if x != nil && x.ExpectedEntryRevision != nil {
+		return *x.ExpectedEntryRevision
+	}
+	return 0
 }
 
 type UpdateEntryResponse struct {
@@ -5114,7 +5138,7 @@ const file_filer_proto_rawDesc = "" +
 	"remoteETag\x12!\n" +
 	"\fremote_mtime\x18\x04 \x01(\x03R\vremoteMtime\x12\x1f\n" +
 	"\vremote_size\x18\x05 \x01(\x03R\n" +
-	"remoteSize\"\x89\x04\n" +
+	"remoteSize\"\xc8\x04\n" +
 	"\x05Entry\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12!\n" +
 	"\fis_directory\x18\x02 \x01(\bR\visDirectory\x12+\n" +
@@ -5130,10 +5154,12 @@ const file_filer_proto_rawDesc = "" +
 	"\fremote_entry\x18\n" +
 	" \x01(\v2\x15.filer_pb.RemoteEntryR\vremoteEntry\x12\x14\n" +
 	"\x05quota\x18\v \x01(\x03R\x05quota\x122\n" +
-	"\x16worm_enforced_at_ts_ns\x18\f \x01(\x03R\x12wormEnforcedAtTsNs\x1a;\n" +
+	"\x16worm_enforced_at_ts_ns\x18\f \x01(\x03R\x12wormEnforcedAtTsNs\x12*\n" +
+	"\x0eentry_revision\x18\r \x01(\x03H\x00R\rentryRevision\x88\x01\x01\x1a;\n" +
 	"\rExtendedEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"D\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01B\x11\n" +
+	"\x0f_entry_revision\"D\n" +
 	"\tFullEntry\x12\x10\n" +
 	"\x03dir\x18\x01 \x01(\tR\x03dir\x12%\n" +
 	"\x05entry\x18\x02 \x01(\v2\x0f.filer_pb.EntryR\x05entry\"\x8f\x02\n" +
@@ -5188,7 +5214,7 @@ const file_filer_proto_rawDesc = "" +
 	"\x05inode\x18\x11 \x01(\x04R\x05inode\x12\x14\n" +
 	"\x05ctime\x18\x12 \x01(\x03R\x05ctime\x12\x19\n" +
 	"\bmtime_ns\x18\x13 \x01(\x05R\amtimeNs\x12\x19\n" +
-	"\bctime_ns\x18\x14 \x01(\x05R\actimeNs\"\x82\x02\n" +
+	"\bctime_ns\x18\x14 \x01(\x05R\actimeNs\"\xdb\x02\n" +
 	"\x12CreateEntryRequest\x12\x1c\n" +
 	"\tdirectory\x18\x01 \x01(\tR\tdirectory\x12%\n" +
 	"\x05entry\x18\x02 \x01(\v2\x0f.filer_pb.EntryR\x05entry\x12\x15\n" +
@@ -5197,12 +5223,14 @@ const file_filer_proto_rawDesc = "" +
 	"\n" +
 	"signatures\x18\x05 \x03(\x05R\n" +
 	"signatures\x12=\n" +
-	"\x1bskip_check_parent_directory\x18\x06 \x01(\bR\x18skipCheckParentDirectory\"\xac\x01\n" +
+	"\x1bskip_check_parent_directory\x18\x06 \x01(\bR\x18skipCheckParentDirectory\x12;\n" +
+	"\x17expected_entry_revision\x18\a \x01(\x03H\x00R\x15expectedEntryRevision\x88\x01\x01B\x1a\n" +
+	"\x18_expected_entry_revision\"\xac\x01\n" +
 	"\x13CreateEntryResponse\x12\x14\n" +
 	"\x05error\x18\x01 \x01(\tR\x05error\x12J\n" +
 	"\x0emetadata_event\x18\x02 \x01(\v2#.filer_pb.SubscribeMetadataResponseR\rmetadataEvent\x123\n" +
 	"\n" +
-	"error_code\x18\x03 \x01(\x0e2\x14.filer_pb.FilerErrorR\terrorCode\"\xd2\x02\n" +
+	"error_code\x18\x03 \x01(\x0e2\x14.filer_pb.FilerErrorR\terrorCode\"\xab\x03\n" +
 	"\x12UpdateEntryRequest\x12\x1c\n" +
 	"\tdirectory\x18\x01 \x01(\tR\tdirectory\x12%\n" +
 	"\x05entry\x18\x02 \x01(\v2\x0f.filer_pb.EntryR\x05entry\x121\n" +
@@ -5210,10 +5238,12 @@ const file_filer_proto_rawDesc = "" +
 	"\n" +
 	"signatures\x18\x04 \x03(\x05R\n" +
 	"signatures\x12_\n" +
-	"\x11expected_extended\x18\x05 \x03(\v22.filer_pb.UpdateEntryRequest.ExpectedExtendedEntryR\x10expectedExtended\x1aC\n" +
+	"\x11expected_extended\x18\x05 \x03(\v22.filer_pb.UpdateEntryRequest.ExpectedExtendedEntryR\x10expectedExtended\x12;\n" +
+	"\x17expected_entry_revision\x18\x06 \x01(\x03H\x00R\x15expectedEntryRevision\x88\x01\x01\x1aC\n" +
 	"\x15ExpectedExtendedEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01\"a\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01B\x1a\n" +
+	"\x18_expected_entry_revision\"a\n" +
 	"\x13UpdateEntryResponse\x12J\n" +
 	"\x0emetadata_event\x18\x01 \x01(\v2#.filer_pb.SubscribeMetadataResponseR\rmetadataEvent\"\x80\x01\n" +
 	"\x14AppendToEntryRequest\x12\x1c\n" +
@@ -5777,6 +5807,9 @@ func file_filer_proto_init() {
 	if File_filer_proto != nil {
 		return
 	}
+	file_filer_proto_msgTypes[5].OneofWrappers = []any{}
+	file_filer_proto_msgTypes[12].OneofWrappers = []any{}
+	file_filer_proto_msgTypes[14].OneofWrappers = []any{}
 	file_filer_proto_msgTypes[69].OneofWrappers = []any{
 		(*StreamMutateEntryRequest_CreateRequest)(nil),
 		(*StreamMutateEntryRequest_UpdateRequest)(nil),

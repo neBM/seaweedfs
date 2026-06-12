@@ -157,12 +157,23 @@ func UpdateEntry(ctx context.Context, client SeaweedFilerClient, request *Update
 }
 
 func UpdateEntryWithResponse(ctx context.Context, client SeaweedFilerClient, request *UpdateEntryRequest) (*UpdateEntryResponse, error) {
+	if request.ExpectedEntryRevision == nil {
+		request.ExpectedEntryRevision = expectedEntryRevision(request.Entry)
+	}
 	resp, err := client.UpdateEntry(ctx, request)
 	if err != nil {
 		glog.V(1).InfofCtx(ctx, "update entry %s/%s :%v", request.Directory, request.Entry.Name, err)
 		return nil, fmt.Errorf("UpdateEntry: %w", err)
 	}
 	return resp, nil
+}
+
+func expectedEntryRevision(entry *Entry) *int64 {
+	if entry == nil || entry.EntryRevision == nil {
+		return nil
+	}
+	revision := entry.GetEntryRevision()
+	return &revision
 }
 
 func LookupEntry(ctx context.Context, client SeaweedFilerClient, request *LookupDirectoryEntryRequest) (*LookupDirectoryEntryResponse, error) {

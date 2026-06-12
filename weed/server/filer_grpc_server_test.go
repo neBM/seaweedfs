@@ -6,6 +6,8 @@ import (
 
 	"github.com/seaweedfs/seaweedfs/weed/filer"
 	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func TestResolveAssignStorageOptionUsesBucketRuleBeforeFilerDiskDefault(t *testing.T) {
@@ -40,6 +42,21 @@ func TestResolveAssignStorageOptionUsesBucketRuleBeforeFilerDiskDefault(t *testi
 	}
 	if got, want := so.DiskType, "disk"; got != want {
 		t.Fatalf("disk type = %q, want %q", got, want)
+	}
+}
+
+func TestValidateUpdateEntryPreconditionsRejectsStaleRevision(t *testing.T) {
+	expected := int64(41)
+	err := validateUpdateEntryPreconditions(&filer.Entry{Revision: 42}, nil, &expected)
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("status.Code(%v) = %v, want %v", err, status.Code(err), codes.FailedPrecondition)
+	}
+}
+
+func TestValidateUpdateEntryPreconditionsAcceptsMatchingRevision(t *testing.T) {
+	expected := int64(42)
+	if err := validateUpdateEntryPreconditions(&filer.Entry{Revision: 42}, nil, &expected); err != nil {
+		t.Fatalf("validateUpdateEntryPreconditions: %v", err)
 	}
 }
 

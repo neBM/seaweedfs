@@ -113,6 +113,8 @@ func (entry *Entry) ToExistingProtoEntry(message *filer_pb.Entry) {
 	message.RemoteEntry = entry.Remote
 	message.Quota = entry.Quota
 	message.WormEnforcedAtTsNs = entry.WORMEnforcedAtTsNs
+	revision := entry.Revision
+	message.EntryRevision = &revision
 }
 
 func FromPbEntryToExistingEntry(message *filer_pb.Entry, fsEntry *Entry) {
@@ -126,6 +128,9 @@ func FromPbEntryToExistingEntry(message *filer_pb.Entry, fsEntry *Entry) {
 	fsEntry.Quota = message.Quota
 	fsEntry.FileSize = FileSize(message)
 	fsEntry.WORMEnforcedAtTsNs = message.WormEnforcedAtTsNs
+	if message.EntryRevision != nil {
+		fsEntry.Revision = message.GetEntryRevision()
+	}
 }
 
 func (entry *Entry) ToProtoFullEntry() *filer_pb.FullEntry {

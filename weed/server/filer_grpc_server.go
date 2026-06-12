@@ -187,7 +187,7 @@ func (fs *FilerServer) CreateEntry(ctx context.Context, req *filer_pb.CreateEntr
 	}
 
 	ctx, eventSink := filer.WithMetadataEventSink(ctx)
-	createErr := fs.filer.CreateEntry(ctx, newEntry, req.OExcl, req.IsFromOtherCluster, req.Signatures, req.SkipCheckParentDirectory, so.MaxFileNameLength)
+	createErr := fs.filer.CreateEntryWithExpectedRevision(ctx, newEntry, req.OExcl, req.IsFromOtherCluster, req.Signatures, req.SkipCheckParentDirectory, so.MaxFileNameLength, req.ExpectedEntryRevision)
 
 	if createErr == nil {
 		fs.filer.DeleteChunksNotRecursive(garbage)
@@ -206,6 +206,8 @@ func (fs *FilerServer) CreateEntry(ctx context.Context, req *filer_pb.CreateEntr
 			resp.ErrorCode = filer_pb.FilerError_EXISTING_IS_FILE
 		case errors.Is(createErr, filer_pb.ErrEntryAlreadyExists):
 			resp.ErrorCode = filer_pb.FilerError_ENTRY_ALREADY_EXISTS
+		case errors.Is(createErr, filer.ErrMetadataRevisionMismatch):
+			return resp, status.Error(codes.FailedPrecondition, createErr.Error())
 		}
 	}
 
@@ -224,7 +226,7 @@ func (fs *FilerServer) UpdateEntry(ctx context.Context, req *filer_pb.UpdateEntr
 	if err != nil {
 		return &filer_pb.UpdateEntryResponse{}, fmt.Errorf("not found %s: %v", fullpath, err)
 	}
-	if err := validateUpdateEntryPreconditions(entry, req.ExpectedExtended); err != nil {
+	if err := validateUpdateEntryPreconditions(entry, req.ExpectedExtended, req.ExpectedEntryRevision); err != nil {
 		return &filer_pb.UpdateEntryResponse{}, err
 	}
 
@@ -247,7 +249,7 @@ func (fs *FilerServer) UpdateEntry(ctx context.Context, req *filer_pb.UpdateEntr
 
 	ctx, eventSink := filer.WithMetadataEventSink(ctx)
 	resp := &filer_pb.UpdateEntryResponse{}
-	if err = fs.filer.UpdateEntry(ctx, entry, newEntry); err == nil {
+	if err = fs.filer.UpdateEntryWithExpectedRevision(ctx, entry, newEntry, req.ExpectedEntryRevision); err == nil {
 		fs.filer.DeleteChunksNotRecursive(garbage)
 
 		fs.filer.NotifyUpdateEvent(ctx, entry, newEntry, true, req.IsFromOtherCluster, req.Signatures)
@@ -255,14 +257,23 @@ func (fs *FilerServer) UpdateEntry(ctx context.Context, req *filer_pb.UpdateEntr
 
 	} else {
 		glog.V(3).InfofCtx(ctx, "UpdateEntry %s: %v", filepath.Join(req.Directory, req.Entry.Name), err)
+		if errors.Is(err, filer.ErrMetadataRevisionMismatch) {
+			return resp, status.Error(codes.FailedPrecondition, err.Error())
+		}
 	}
 
 	return resp, err
 }
 
-func validateUpdateEntryPreconditions(entry *filer.Entry, expectedExtended map[string][]byte) error {
-	if len(expectedExtended) == 0 {
+func validateUpdateEntryPreconditions(entry *filer.Entry, expectedExtended map[string][]byte, expectedRevision *int64) error {
+	if len(expectedExtended) == 0 && expectedRevision == nil {
 		return nil
+	}
+
+	if expectedRevision != nil {
+		if entry == nil || entry.Revision != *expectedRevision {
+			return status.Errorf(codes.FailedPrecondition, "entry revision changed")
+		}
 	}
 
 	for key, expectedValue := range expectedExtended {

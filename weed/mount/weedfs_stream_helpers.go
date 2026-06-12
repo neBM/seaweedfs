@@ -11,6 +11,9 @@ import (
 // streamCreateEntry routes a CreateEntryRequest through the streaming mux
 // if available, falling back to a unary gRPC call on transport errors.
 func (wfs *WFS) streamCreateEntry(ctx context.Context, req *filer_pb.CreateEntryRequest) (*filer_pb.CreateEntryResponse, error) {
+	if req.ExpectedEntryRevision == nil {
+		req.ExpectedEntryRevision = expectedEntryRevision(req.Entry)
+	}
 	if wfs.streamMutate != nil && wfs.streamMutate.IsAvailable() {
 		resp, err := wfs.streamMutate.CreateEntry(ctx, req)
 		if err == nil || !errors.Is(err, ErrStreamTransport) {
@@ -30,6 +33,9 @@ func (wfs *WFS) streamCreateEntry(ctx context.Context, req *filer_pb.CreateEntry
 // streamUpdateEntry routes an UpdateEntryRequest through the streaming mux
 // if available, falling back to a unary gRPC call on transport errors.
 func (wfs *WFS) streamUpdateEntry(ctx context.Context, req *filer_pb.UpdateEntryRequest) (*filer_pb.UpdateEntryResponse, error) {
+	if req.ExpectedEntryRevision == nil {
+		req.ExpectedEntryRevision = expectedEntryRevision(req.Entry)
+	}
 	if wfs.streamMutate != nil && wfs.streamMutate.IsAvailable() {
 		resp, err := wfs.streamMutate.UpdateEntry(ctx, req)
 		if err == nil || !errors.Is(err, ErrStreamTransport) {
@@ -44,6 +50,14 @@ func (wfs *WFS) streamUpdateEntry(ctx context.Context, req *filer_pb.UpdateEntry
 		return err
 	})
 	return resp, err
+}
+
+func expectedEntryRevision(entry *filer_pb.Entry) *int64 {
+	if entry == nil || entry.EntryRevision == nil {
+		return nil
+	}
+	revision := entry.GetEntryRevision()
+	return &revision
 }
 
 // streamDeleteEntry routes a DeleteEntryRequest through the streaming mux

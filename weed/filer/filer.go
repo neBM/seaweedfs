@@ -201,6 +201,10 @@ func (f *Filer) RollbackTransaction(ctx context.Context) error {
 }
 
 func (f *Filer) CreateEntry(ctx context.Context, entry *Entry, o_excl bool, isFromOtherCluster bool, signatures []int32, skipCreateParentDir bool, maxFilenameLength uint32) error {
+	return f.CreateEntryWithExpectedRevision(ctx, entry, o_excl, isFromOtherCluster, signatures, skipCreateParentDir, maxFilenameLength, nil)
+}
+
+func (f *Filer) CreateEntryWithExpectedRevision(ctx context.Context, entry *Entry, o_excl bool, isFromOtherCluster bool, signatures []int32, skipCreateParentDir bool, maxFilenameLength uint32, expectedRevision *int64) error {
 
 	if string(entry.FullPath) == "/" {
 		return nil
@@ -225,6 +229,9 @@ func (f *Filer) CreateEntry(ctx context.Context, entry *Entry, o_excl bool, isFr
 	*/
 
 	if oldEntry == nil {
+		if expectedRevision != nil && *expectedRevision != 0 {
+			return fmt.Errorf("%s: %w", entry.FullPath, ErrMetadataRevisionMismatch)
+		}
 
 		if !skipCreateParentDir {
 			dirParts := strings.Split(string(entry.FullPath), "/")
@@ -244,7 +251,7 @@ func (f *Filer) CreateEntry(ctx context.Context, entry *Entry, o_excl bool, isFr
 			return fmt.Errorf("%s: %w", entry.FullPath, filer_pb.ErrEntryAlreadyExists)
 		}
 		glog.V(4).InfofCtx(ctx, "UpdateEntry %s: old entry: %v", entry.FullPath, oldEntry.Name())
-		if err := f.UpdateEntry(ctx, oldEntry, entry); err != nil {
+		if err := f.UpdateEntryWithExpectedRevision(ctx, oldEntry, entry, expectedRevision); err != nil {
 			glog.ErrorfCtx(ctx, "update entry %s: %v", entry.FullPath, err)
 			return fmt.Errorf("update entry %s: %v", entry.FullPath, err)
 		}
@@ -343,9 +350,17 @@ func (f *Filer) ensureParentDirectoryEntry(ctx context.Context, entry *Entry, di
 }
 
 func (f *Filer) UpdateEntry(ctx context.Context, oldEntry, entry *Entry) (err error) {
+	return f.UpdateEntryWithExpectedRevision(ctx, oldEntry, entry, nil)
+}
+
+func (f *Filer) UpdateEntryWithExpectedRevision(ctx context.Context, oldEntry, entry *Entry, expectedRevision *int64) (err error) {
 	if oldEntry != nil {
 		entry.Attr.Crtime = oldEntry.Attr.Crtime
-		entry.Revision = oldEntry.Revision
+		if expectedRevision != nil {
+			entry.Revision = *expectedRevision
+		} else {
+			entry.Revision = oldEntry.Revision
+		}
 		if oldEntry.IsDirectory() && !entry.IsDirectory() {
 			glog.ErrorfCtx(ctx, "existing %s is a directory", oldEntry.FullPath)
 			return fmt.Errorf("%s: %w", oldEntry.FullPath, filer_pb.ErrExistingIsDirectory)
