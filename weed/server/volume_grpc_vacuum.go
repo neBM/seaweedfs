@@ -91,7 +91,10 @@ func (vs *VolumeServer) VacuumVolumeCommit(ctx context.Context, req *volume_serv
 
 	resp := &volume_server_pb.VacuumVolumeCommitResponse{}
 
-	readOnly, volumeSize, err := vs.store.CommitCompactVolume(needle.VolumeId(req.VolumeId))
+	volumeId := needle.VolumeId(req.VolumeId)
+	readOnly, volumeSize, err := vs.store.CommitCompactVolumeWithGuard(volumeId, func(compactIndexFileName string) error {
+		return vs.chunkGuard.CheckCompactIndex(ctx, volumeId, compactIndexFileName)
+	})
 
 	if err != nil {
 		glog.Errorf("failed commit volume %d: %v", req.VolumeId, err)

@@ -42,6 +42,7 @@ type VolumeServer struct {
 	store           *storage.Store
 	guard           *security.Guard
 	grpcDialOption  grpc.DialOption
+	chunkGuard      *ChunkReferenceGuard
 
 	needleMapKind            storage.NeedleMapKind
 	ldbTimout                int64
@@ -147,6 +148,10 @@ func NewVolumeServer(adminMux, publicMux *http.ServeMux, ip string,
 	go stats.LoopPushingMetric("volumeServer", util.JoinHostPort(ip, port), vs.metricsAddress, vs.metricsIntervalSec)
 
 	return vs
+}
+
+func (vs *VolumeServer) SetChunkReferenceGuard(filerAddresses []pb.ServerAddress) {
+	vs.chunkGuard = NewChunkReferenceGuard(filerAddresses, vs.grpcDialOption)
 }
 
 func (vs *VolumeServer) SetStopping() {

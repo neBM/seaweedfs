@@ -92,6 +92,11 @@ func (vs *VolumeServer) DeleteHandler(w http.ResponseWriter, r *http.Request) {
 	ecVolume, hasEcVolume := vs.store.FindEcVolume(volumeId)
 
 	if hasEcVolume {
+		fileId := needle.NewFileId(volumeId, uint64(n.Id), uint32(cookie)).String()
+		if err := vs.chunkGuard.CheckFileIds(r.Context(), []string{fileId}); err != nil {
+			writeJsonError(w, r, http.StatusConflict, err)
+			return
+		}
 		count, err := vs.store.DeleteEcShardNeedle(ecVolume, n, cookie)
 		writeDeleteResult(err, count, w, r)
 		return
@@ -108,6 +113,12 @@ func (vs *VolumeServer) DeleteHandler(w http.ResponseWriter, r *http.Request) {
 	if n.Cookie != cookie {
 		glog.V(0).Infoln("delete", r.URL.Path, "with unmaching cookie from ", r.RemoteAddr, "agent", r.UserAgent())
 		writeJsonError(w, r, http.StatusBadRequest, errors.New("File Random Cookie does not match."))
+		return
+	}
+
+	fileId := needle.NewFileId(volumeId, uint64(n.Id), uint32(n.Cookie)).String()
+	if err := vs.chunkGuard.CheckFileIds(r.Context(), []string{fileId}); err != nil {
+		writeJsonError(w, r, http.StatusConflict, err)
 		return
 	}
 

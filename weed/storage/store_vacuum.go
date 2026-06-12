@@ -32,12 +32,16 @@ func (s *Store) CompactVolume(vid needle.VolumeId, preallocate int64, compaction
 }
 
 func (s *Store) CommitCompactVolume(vid needle.VolumeId) (bool, int64, error) {
+	return s.CommitCompactVolumeWithGuard(vid, nil)
+}
+
+func (s *Store) CommitCompactVolumeWithGuard(vid needle.VolumeId, commitGuard func(compactIndexFileName string) error) (bool, int64, error) {
 	if s.isStopping {
 		return false, 0, fmt.Errorf("volume id %d skips compact because volume is stopping", vid)
 	}
 	if v := s.findVolume(vid); v != nil {
 		isReadOnly := v.IsReadOnly()
-		err := v.CommitCompact()
+		err := v.CommitCompactWithGuard(commitGuard)
 		var volumeSize int64 = 0
 		if err == nil && v.DataBackend != nil {
 			volumeSize, _, _ = v.DataBackend.GetStat()

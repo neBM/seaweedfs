@@ -268,12 +268,13 @@ func (fs *FilerServer) UpdateEntry(ctx context.Context, req *filer_pb.UpdateEntr
 }
 
 func (fs *FilerServer) CheckChunkReferences(ctx context.Context, req *filer_pb.CheckChunkReferencesRequest) (*filer_pb.CheckChunkReferencesResponse, error) {
-	chunkStatus, err := fs.filer.CheckChunkReferences(ctx, req.FileIds, req.IncludePaths)
+	chunkStatus, missingFileIds, err := fs.filer.CheckChunkReferencesForVolume(ctx, req.FileIds, req.IncludePaths, req.VolumeId, req.PresentFileKeys)
 	if err != nil {
 		return nil, err
 	}
 	return &filer_pb.CheckChunkReferencesResponse{
-		ChunkStatus: chunkStatus,
+		ChunkStatus:    chunkStatus,
+		MissingFileIds: missingFileIds,
 	}, nil
 }
 

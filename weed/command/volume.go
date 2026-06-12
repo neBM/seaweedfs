@@ -46,6 +46,7 @@ type VolumeServerOptions struct {
 	bindIp                    *string
 	mastersString             *string
 	mserverString             *string // deprecated, for backward compatibility
+	filersString              *string
 	masters                   []pb.ServerAddress
 	idleConnectionTimeout     *int
 	dataCenter                *string
@@ -88,6 +89,7 @@ func init() {
 	v.bindIp = cmdVolume.Flag.String("ip.bind", "", "ip address to bind to. If empty, default to same as -ip option.")
 	v.mastersString = cmdVolume.Flag.String("master", "localhost:9333", "comma-separated master servers")
 	v.mserverString = cmdVolume.Flag.String("mserver", "", "comma-separated master servers (deprecated, use -master instead)")
+	v.filersString = cmdVolume.Flag.String("filer", "", "comma-separated filer server gRPC addresses for chunk reference checks before physical deletes and vacuum commits")
 	v.preStopSeconds = cmdVolume.Flag.Int("preStopSeconds", 10, "number of seconds between stop send heartbeats and stop volume server")
 	// v.pulseSeconds = cmdVolume.Flag.Int("pulseSeconds", 5, "number of seconds between heartbeats, must be smaller than or equal to the master's setting")
 	v.idleConnectionTimeout = cmdVolume.Flag.Int("idleTimeout", 30, "connection idle seconds")
@@ -294,6 +296,7 @@ func (v VolumeServerOptions) startVolumeServer(volumeFolders, maxVolumeCounts, v
 		*v.readBufferSizeMB,
 		*v.ldbTimeout,
 	)
+	volumeServer.SetChunkReferenceGuard(pb.ServerAddresses(*v.filersString).ToAddresses())
 	// starting grpc server
 	grpcS := v.startGrpcService(volumeServer)
 

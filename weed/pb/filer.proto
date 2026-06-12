@@ -273,6 +273,8 @@ message DeleteEntryResponse {
 message CheckChunkReferencesRequest {
     repeated string file_ids = 1;
     bool include_paths = 2;
+    uint32 volume_id = 3;
+    repeated uint64 present_file_keys = 4;
 }
 
 message ChunkReferenceStatus {
@@ -283,6 +285,7 @@ message ChunkReferenceStatus {
 
 message CheckChunkReferencesResponse {
     map<string, ChunkReferenceStatus> chunk_status = 1;
+    repeated string missing_file_ids = 2;
 }
 
 message AtomicRenameEntryRequest {

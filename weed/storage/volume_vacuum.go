@@ -139,6 +139,10 @@ func (v *Volume) CompactByIndex(opts *CompactOptions) error {
 }
 
 func (v *Volume) CommitCompact() error {
+	return v.CommitCompactWithGuard(nil)
+}
+
+func (v *Volume) CommitCompactWithGuard(commitGuard func(compactIndexFileName string) error) error {
 	if v.MemoryMapMaxSizeMb != 0 { //it makes no sense to compact in memory
 		return nil
 	}
@@ -178,6 +182,11 @@ func (v *Volume) CommitCompact() error {
 			return e
 		}
 	} else {
+		if commitGuard != nil {
+			if e = commitGuard(v.FileName(".cpx")); e != nil {
+				return e
+			}
+		}
 		if runtime.GOOS == "windows" {
 			e = os.RemoveAll(v.FileName(".dat"))
 			if e != nil {

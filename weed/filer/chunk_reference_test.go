@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
+	"github.com/seaweedfs/seaweedfs/weed/storage/needle"
 	"github.com/seaweedfs/seaweedfs/weed/util"
 )
 
@@ -58,6 +59,35 @@ func TestChunkLeaseManagerExpiresLeases(t *testing.T) {
 	now = now.Add(2 * time.Second)
 	if leases.Snapshot([]string{"1,abc"})["1,abc"] {
 		t.Fatalf("lease should expire")
+	}
+}
+
+func TestCheckChunkReferencesForVolumeReportsMissingReferencedKey(t *testing.T) {
+	fileId := needle.NewFileId(needle.VolumeId(7), 123, 456).String()
+	store := newChunkReferenceTestStore()
+	store.entries["/file.txt"] = &Entry{
+		FullPath: "/file.txt",
+		Chunks:   []*filer_pb.FileChunk{{FileId: fileId}},
+	}
+	f := &Filer{
+		Store:       NewFilerStoreWrapper(store),
+		ChunkLeases: NewChunkLeaseManager(),
+	}
+
+	_, missing, err := f.CheckChunkReferencesForVolume(context.Background(), nil, false, 7, []uint64{999})
+	if err != nil {
+		t.Fatalf("CheckChunkReferencesForVolume: %v", err)
+	}
+	if got, want := strings.Join(missing, ","), fileId; got != want {
+		t.Fatalf("missing = %v, want %s", missing, want)
+	}
+
+	_, missing, err = f.CheckChunkReferencesForVolume(context.Background(), nil, false, 7, []uint64{123})
+	if err != nil {
+		t.Fatalf("CheckChunkReferencesForVolume with present key: %v", err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("missing = %v, want none", missing)
 	}
 }
 

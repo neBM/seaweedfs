@@ -18,6 +18,7 @@ func (vs *VolumeServer) BatchDelete(ctx context.Context, req *volume_server_pb.B
 	}
 
 	now := uint64(time.Now().Unix())
+	protectedFileIds, protectedErr := vs.chunkGuard.ProtectedFileIds(ctx, req.FileIds)
 
 	for _, fid := range req.FileIds {
 		vid, id_cookie, err := operation.ParseFileId(fid)
@@ -78,6 +79,23 @@ func (vs *VolumeServer) BatchDelete(ctx context.Context, req *volume_server_pb.B
 				FileId: fid,
 				Status: http.StatusNotAcceptable,
 				Error:  "ChunkManifest: not allowed in batch delete mode.",
+			})
+			continue
+		}
+
+		if protectedErr != nil {
+			resp.Results = append(resp.Results, &volume_server_pb.DeleteResult{
+				FileId: fid,
+				Status: http.StatusConflict,
+				Error:  protectedErr.Error(),
+			})
+			continue
+		}
+		if protectedDescription, ok := protectedFileIds[fid]; ok {
+			resp.Results = append(resp.Results, &volume_server_pb.DeleteResult{
+				FileId: fid,
+				Status: http.StatusConflict,
+				Error:  "chunk reference guard blocked protected file id: " + protectedDescription,
 			})
 			continue
 		}

@@ -1655,11 +1655,13 @@ func (x *DeleteEntryResponse) GetMetadataEvent() *SubscribeMetadataResponse {
 }
 
 type CheckChunkReferencesRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	FileIds       []string               `protobuf:"bytes,1,rep,name=file_ids,json=fileIds,proto3" json:"file_ids,omitempty"`
-	IncludePaths  bool                   `protobuf:"varint,2,opt,name=include_paths,json=includePaths,proto3" json:"include_paths,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	FileIds         []string               `protobuf:"bytes,1,rep,name=file_ids,json=fileIds,proto3" json:"file_ids,omitempty"`
+	IncludePaths    bool                   `protobuf:"varint,2,opt,name=include_paths,json=includePaths,proto3" json:"include_paths,omitempty"`
+	VolumeId        uint32                 `protobuf:"varint,3,opt,name=volume_id,json=volumeId,proto3" json:"volume_id,omitempty"`
+	PresentFileKeys []uint64               `protobuf:"varint,4,rep,packed,name=present_file_keys,json=presentFileKeys,proto3" json:"present_file_keys,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *CheckChunkReferencesRequest) Reset() {
@@ -1704,6 +1706,20 @@ func (x *CheckChunkReferencesRequest) GetIncludePaths() bool {
 		return x.IncludePaths
 	}
 	return false
+}
+
+func (x *CheckChunkReferencesRequest) GetVolumeId() uint32 {
+	if x != nil {
+		return x.VolumeId
+	}
+	return 0
+}
+
+func (x *CheckChunkReferencesRequest) GetPresentFileKeys() []uint64 {
+	if x != nil {
+		return x.PresentFileKeys
+	}
+	return nil
 }
 
 type ChunkReferenceStatus struct {
@@ -1767,10 +1783,11 @@ func (x *ChunkReferenceStatus) GetPaths() []string {
 }
 
 type CheckChunkReferencesResponse struct {
-	state         protoimpl.MessageState           `protogen:"open.v1"`
-	ChunkStatus   map[string]*ChunkReferenceStatus `protobuf:"bytes,1,rep,name=chunk_status,json=chunkStatus,proto3" json:"chunk_status,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState           `protogen:"open.v1"`
+	ChunkStatus    map[string]*ChunkReferenceStatus `protobuf:"bytes,1,rep,name=chunk_status,json=chunkStatus,proto3" json:"chunk_status,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	MissingFileIds []string                         `protobuf:"bytes,2,rep,name=missing_file_ids,json=missingFileIds,proto3" json:"missing_file_ids,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CheckChunkReferencesResponse) Reset() {
@@ -1806,6 +1823,13 @@ func (*CheckChunkReferencesResponse) Descriptor() ([]byte, []int) {
 func (x *CheckChunkReferencesResponse) GetChunkStatus() map[string]*ChunkReferenceStatus {
 	if x != nil {
 		return x.ChunkStatus
+	}
+	return nil
+}
+
+func (x *CheckChunkReferencesResponse) GetMissingFileIds() []string {
+	if x != nil {
+		return x.MissingFileIds
 	}
 	return nil
 }
@@ -5421,18 +5445,21 @@ const file_filer_proto_rawDesc = "" +
 	"\x15if_not_modified_after\x18\t \x01(\x03R\x12ifNotModifiedAfter\"w\n" +
 	"\x13DeleteEntryResponse\x12\x14\n" +
 	"\x05error\x18\x01 \x01(\tR\x05error\x12J\n" +
-	"\x0emetadata_event\x18\x02 \x01(\v2#.filer_pb.SubscribeMetadataResponseR\rmetadataEvent\"]\n" +
+	"\x0emetadata_event\x18\x02 \x01(\v2#.filer_pb.SubscribeMetadataResponseR\rmetadataEvent\"\xa6\x01\n" +
 	"\x1bCheckChunkReferencesRequest\x12\x19\n" +
 	"\bfile_ids\x18\x01 \x03(\tR\afileIds\x12#\n" +
-	"\rinclude_paths\x18\x02 \x01(\bR\fincludePaths\"d\n" +
+	"\rinclude_paths\x18\x02 \x01(\bR\fincludePaths\x12\x1b\n" +
+	"\tvolume_id\x18\x03 \x01(\rR\bvolumeId\x12*\n" +
+	"\x11present_file_keys\x18\x04 \x03(\x04R\x0fpresentFileKeys\"d\n" +
 	"\x14ChunkReferenceStatus\x12\x1e\n" +
 	"\n" +
 	"referenced\x18\x01 \x01(\bR\n" +
 	"referenced\x12\x16\n" +
 	"\x06leased\x18\x02 \x01(\bR\x06leased\x12\x14\n" +
-	"\x05paths\x18\x03 \x03(\tR\x05paths\"\xda\x01\n" +
+	"\x05paths\x18\x03 \x03(\tR\x05paths\"\x84\x02\n" +
 	"\x1cCheckChunkReferencesResponse\x12Z\n" +
-	"\fchunk_status\x18\x01 \x03(\v27.filer_pb.CheckChunkReferencesResponse.ChunkStatusEntryR\vchunkStatus\x1a^\n" +
+	"\fchunk_status\x18\x01 \x03(\v27.filer_pb.CheckChunkReferencesResponse.ChunkStatusEntryR\vchunkStatus\x12(\n" +
+	"\x10missing_file_ids\x18\x02 \x03(\tR\x0emissingFileIds\x1a^\n" +
 	"\x10ChunkStatusEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x124\n" +
 	"\x05value\x18\x02 \x01(\v2\x1e.filer_pb.ChunkReferenceStatusR\x05value:\x028\x01\"\xba\x01\n" +
