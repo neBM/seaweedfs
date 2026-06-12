@@ -361,3 +361,19 @@ func (vc *vidMapClient) InvalidateCache(fileId string) {
 		vm.deleteVid(uint32(vid))
 	})
 }
+
+// InvalidateAllCaches drops the entire current volume-location cache and its
+// history chain. Unlike resetVidMap, this is a hard flush for rollout repair:
+// subsequent lookups must go back to the provider instead of falling back to
+// stale historical locations.
+func (vc *vidMapClient) InvalidateAllCaches() {
+	vc.vidMapLock.Lock()
+	defer vc.vidMapLock.Unlock()
+
+	dataCenter := ""
+	if vc.vidMap != nil {
+		dataCenter = vc.vidMap.DataCenter
+	}
+
+	vc.vidMap = newVidMap(dataCenter)
+}

@@ -103,6 +103,11 @@ type Option struct {
 	uniqueCacheDirForWrite string
 }
 
+type volumeLocationClient interface {
+	wdclient.HasLookupFileIdFunction
+	RefreshVolumeLocations()
+}
+
 type WFS struct {
 	// https://dl.acm.org/doi/fullHtml/10.1145/3310148
 	// follow https://github.com/hanwen/go-fuse/blob/master/fuse/api.go
@@ -126,7 +131,7 @@ type WFS struct {
 	posixLocks           *PosixLockTable
 	rdmaClient           *RDMAMountClient
 	FilerConf            *filer.FilerConf
-	filerClient          *wdclient.FilerClient // Cached volume location client
+	filerClient          volumeLocationClient // Cached volume location client
 	refreshMu            sync.Mutex
 	refreshingDirs       map[util.FullPath]struct{}
 	atimeMu              sync.Mutex
@@ -169,7 +174,7 @@ const (
 func NewSeaweedFileSystem(option *Option) *WFS {
 	// Only create FilerClient for direct volume access modes
 	// When VolumeServerAccess == "filerProxy", all reads go through filer, so no volume lookup needed
-	var filerClient *wdclient.FilerClient
+	var filerClient volumeLocationClient
 	if option.VolumeServerAccess != "filerProxy" {
 		// Create FilerClient for efficient volume location caching
 		// Pass all filer addresses for high availability with automatic failover

@@ -205,3 +205,57 @@ func TestDeleteVidRecursion(t *testing.T) {
 		t.Error("Expected vid to be removed from vm1 (cascaded)")
 	}
 }
+
+func TestInvalidateAllCachesDropsHistory(t *testing.T) {
+	vid := uint32(321)
+
+	vm1 := newVidMap("dc1")
+	vm1.Lock()
+	vm1.vid2Locations[vid] = []Location{{Url: "http://server1:8080"}}
+	vm1.Unlock()
+
+	vm2 := newVidMap("dc1")
+	vm2.cache.Store(vm1)
+	vm2.Lock()
+	vm2.vid2Locations[vid] = []Location{{Url: "http://server2:8080"}}
+	vm2.Unlock()
+
+	vc := &vidMapClient{
+		vidMap:          vm2,
+		vidMapCacheSize: 5,
+	}
+
+	if locations, found := vc.GetLocations(vid); !found || len(locations) != 1 {
+		t.Fatalf("expected current vidMap to contain volume %d before refresh", vid)
+	}
+
+	vc.InvalidateAllCaches()
+
+	current := vc.getStableVidMap()
+	if current == vm2 {
+		t.Fatal("expected InvalidateAllCaches to replace the current vidMap")
+	}
+	if current.DataCenter != "dc1" {
+		t.Fatalf("InvalidateAllCaches data center = %q, want %q", current.DataCenter, "dc1")
+	}
+	if cached := current.cache.Load(); cached != nil {
+		t.Fatalf("expected InvalidateAllCaches to drop history chain, got %#v", cached)
+	}
+	if locations, found := vc.GetLocations(vid); found || len(locations) != 0 {
+		t.Fatalf("expected volume %d to be absent after hard cache flush, got found=%v locations=%v", vid, found, locations)
+	}
+
+	vm2.RLock()
+	_, foundInOldCurrent := vm2.vid2Locations[vid]
+	vm2.RUnlock()
+	if !foundInOldCurrent {
+		t.Fatal("expected old vidMap instance to remain untouched; only the current pointer should be replaced")
+	}
+
+	vm1.RLock()
+	_, foundInHistory := vm1.vid2Locations[vid]
+	vm1.RUnlock()
+	if !foundInHistory {
+		t.Fatal("expected historical vidMap instance to remain untouched; history should be detached, not mutated in place")
+	}
+}

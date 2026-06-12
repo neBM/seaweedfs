@@ -269,6 +269,15 @@ func (fc *FilerClient) RecordFilerSuccess(addr pb.ServerAddress) {
 	}
 }
 
+// RefreshVolumeLocations drops all cached volume-server locations so the next
+// read path re-resolves through the filer.
+func (fc *FilerClient) RefreshVolumeLocations() {
+	if fc == nil || fc.vidMapClient == nil {
+		return
+	}
+	fc.vidMapClient.InvalidateAllCaches()
+}
+
 // RecordFilerFailure increments failure count for an unhealthy filer
 func (fc *FilerClient) RecordFilerFailure(addr pb.ServerAddress) {
 	fc.filerAddressesMu.RLock()
