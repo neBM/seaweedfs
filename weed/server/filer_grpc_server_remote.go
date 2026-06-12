@@ -281,6 +281,7 @@ func (fs *FilerServer) doCacheRemoteObjectToLocalCluster(ctx context.Context, re
 	newEntry.Chunks = chunks
 	newEntry.Remote = proto.Clone(entry.Remote).(*filer_pb.RemoteEntry)
 	newEntry.Remote.LastLocalSyncTsNs = time.Now().UnixNano()
+	newEntry.SkipRevisionCheck = true
 
 	// this skips meta data log events
 

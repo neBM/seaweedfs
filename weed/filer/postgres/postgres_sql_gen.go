@@ -37,6 +37,10 @@ func (gen *SqlGenPostgres) GetSqlUpdateWithRevision(tableName string) string {
 	return fmt.Sprintf(`UPDATE "%s" SET meta=$1, entry_revision=entry_revision+1 WHERE dirhash=$2 AND name=$3 AND directory=$4 AND entry_revision=$5 RETURNING entry_revision`, tableName)
 }
 
+func (gen *SqlGenPostgres) GetSqlUpdateUnconditionalWithRevision(tableName string) string {
+	return fmt.Sprintf(`UPDATE "%s" SET meta=$1, entry_revision=entry_revision+1 WHERE dirhash=$2 AND name=$3 AND directory=$4 RETURNING entry_revision`, tableName)
+}
+
 func (gen *SqlGenPostgres) GetSqlFind(tableName string) string {
 	return fmt.Sprintf(`SELECT meta FROM "%s" WHERE dirhash=$1 AND name=$2 AND directory=$3`, tableName)
 }

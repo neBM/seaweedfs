@@ -337,6 +337,7 @@ func (ma *MetaAggregator) traversePeerMetadata(f *Filer, peer pb.ServerAddress) 
 				}
 				// Only overwrite if the peer's entry is newer.
 				if entry.Attr.Mtime.After(existing.Attr.Mtime) {
+					entry.SkipRevisionCheck = true
 					if updateErr := f.Store.UpdateEntry(context.Background(), entry); updateErr != nil {
 						return fmt.Errorf("update entry %s: %w", fullpath, updateErr)
 					}

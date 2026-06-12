@@ -65,6 +65,10 @@ func (revisionTestSqlGen) GetSqlUpdateWithRevision(tableName string) string {
 	return fmt.Sprintf(`UPDATE "%s" SET meta=?, entry_revision=entry_revision+1 WHERE dirhash=? AND name=? AND directory=? AND entry_revision=? RETURNING entry_revision`, tableName)
 }
 
+func (revisionTestSqlGen) GetSqlUpdateUnconditionalWithRevision(tableName string) string {
+	return fmt.Sprintf(`UPDATE "%s" SET meta=?, entry_revision=entry_revision+1 WHERE dirhash=? AND name=? AND directory=? RETURNING entry_revision`, tableName)
+}
+
 func (revisionTestSqlGen) GetSqlFindWithRevision(tableName string) string {
 	return fmt.Sprintf(`SELECT meta, entry_revision FROM "%s" WHERE dirhash=? AND name=? AND directory=?`, tableName)
 }
@@ -118,6 +122,39 @@ func TestStrictEntryRevisionRejectsStaleUpdate(t *testing.T) {
 	updated, err := store.FindEntry(ctx, entry.FullPath)
 	require.NoError(t, err)
 	require.Equal(t, int64(2), updated.Revision)
+	require.Equal(t, "application/json", updated.Mime)
+}
+
+func TestStrictEntryRevisionAllowsExplicitUnconditionalUpdate(t *testing.T) {
+	store := newRevisionTestStore(t)
+	ctx := context.Background()
+
+	entry := &filer.Entry{
+		FullPath: "/dir/file.txt",
+		Attr: filer.Attr{
+			Mode: 0o660,
+			Mime: "text/plain",
+		},
+	}
+	require.NoError(t, store.InsertEntry(ctx, entry))
+	require.Equal(t, int64(1), entry.Revision)
+
+	current, err := store.FindEntry(ctx, entry.FullPath)
+	require.NoError(t, err)
+	current.Mime = "image/png"
+	require.NoError(t, store.UpdateEntry(ctx, current))
+	require.Equal(t, int64(2), current.Revision)
+
+	staleReplacement := entry.ShallowClone()
+	staleReplacement.Revision = 1
+	staleReplacement.SkipRevisionCheck = true
+	staleReplacement.Mime = "application/json"
+	require.NoError(t, store.UpdateEntry(ctx, staleReplacement))
+	require.Equal(t, int64(3), staleReplacement.Revision)
+
+	updated, err := store.FindEntry(ctx, entry.FullPath)
+	require.NoError(t, err)
+	require.Equal(t, int64(3), updated.Revision)
 	require.Equal(t, "application/json", updated.Mime)
 }
 

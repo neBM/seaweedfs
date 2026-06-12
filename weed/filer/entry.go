@@ -50,6 +50,13 @@ type Entry struct {
 	// Revision is owned by revision-aware filer stores. It is not part of the
 	// serialized entry metadata blob; it protects that blob from stale rewrites.
 	Revision int64
+
+	// SkipRevisionCheck asks revision-aware stores to advance the revision
+	// without comparing the previous value. This is for operations whose
+	// semantics are already "replace current metadata", such as rename
+	// overwrite and internal metadata log appends. Explicit expected revisions
+	// still use compare-and-swap protection.
+	SkipRevisionCheck bool
 }
 
 func (entry *Entry) Size() uint64 {
@@ -80,6 +87,7 @@ func (entry *Entry) ShallowClone() *Entry {
 	newEntry.Quota = entry.Quota
 	newEntry.WORMEnforcedAtTsNs = entry.WORMEnforcedAtTsNs
 	newEntry.Revision = entry.Revision
+	newEntry.SkipRevisionCheck = entry.SkipRevisionCheck
 
 	return newEntry
 }

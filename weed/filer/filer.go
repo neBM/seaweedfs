@@ -342,6 +342,7 @@ func (f *Filer) ensureParentDirectoryEntry(ctx context.Context, entry *Entry, di
 		// the original object data remains accessible.
 		glog.V(2).InfofCtx(ctx, "promoting %s from file to directory for %s", dirPath, entry.FullPath)
 		dirEntry.Attr.Mode |= os.ModeDir | 0111
+		dirEntry.SkipRevisionCheck = true
 		if updateErr := f.Store.UpdateEntry(ctx, dirEntry); updateErr != nil {
 			return fmt.Errorf("promote %s to directory: %v", dirPath, updateErr)
 		}
@@ -360,8 +361,10 @@ func (f *Filer) UpdateEntryWithExpectedRevision(ctx context.Context, oldEntry, e
 		entry.Attr.Crtime = oldEntry.Attr.Crtime
 		if expectedRevision != nil {
 			entry.Revision = *expectedRevision
+			entry.SkipRevisionCheck = false
 		} else {
 			entry.Revision = oldEntry.Revision
+			entry.SkipRevisionCheck = true
 		}
 		if oldEntry.IsDirectory() && !entry.IsDirectory() {
 			glog.ErrorfCtx(ctx, "existing %s is a directory", oldEntry.FullPath)

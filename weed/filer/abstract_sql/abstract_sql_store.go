@@ -29,6 +29,7 @@ type SqlGenerator interface {
 type EntryRevisionSqlGenerator interface {
 	GetSqlInsertWithRevision(tableName string) string
 	GetSqlUpdateWithRevision(tableName string) string
+	GetSqlUpdateUnconditionalWithRevision(tableName string) string
 	GetSqlFindWithRevision(tableName string) string
 	GetSqlListExclusiveWithRevision(tableName string) string
 	GetSqlListInclusiveWithRevision(tableName string) string
@@ -240,7 +241,11 @@ func (store *AbstractSqlStore) UpdateEntry(ctx context.Context, entry *filer.Ent
 
 		if gen, ok := store.entryRevisionGenerator(); ok {
 			var nextRevision int64
-			err = db.QueryRowContext(ctx, gen.GetSqlUpdateWithRevision(bucket), meta, util.HashStringToLong(dir), name, dir, entry.Revision).Scan(&nextRevision)
+			if entry.SkipRevisionCheck {
+				err = db.QueryRowContext(ctx, gen.GetSqlUpdateUnconditionalWithRevision(bucket), meta, util.HashStringToLong(dir), name, dir).Scan(&nextRevision)
+			} else {
+				err = db.QueryRowContext(ctx, gen.GetSqlUpdateWithRevision(bucket), meta, util.HashStringToLong(dir), name, dir, entry.Revision).Scan(&nextRevision)
+			}
 			if err == sql.ErrNoRows {
 				return fmt.Errorf("update %s: %w", entry.FullPath, filer.ErrMetadataRevisionMismatch)
 			}

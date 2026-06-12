@@ -50,6 +50,9 @@ func (entry *Entry) EncodeAttributesAndChunks() ([]byte, error) {
 	}()
 
 	entry.ToExistingProtoEntry(message)
+	// Entry revisions belong to revision-aware stores, not the serialized
+	// metadata blob. RPC responses attach revisions after loading from storage.
+	message.EntryRevision = nil
 
 	data, err := proto.Marshal(message)
 	if err != nil {
@@ -72,7 +75,11 @@ func (entry *Entry) DecodeAttributesAndChunks(blob []byte) error {
 		return fmt.Errorf("decoding value blob for %s: %v", entry.FullPath, err)
 	}
 
+	revision := entry.Revision
+	skipRevisionCheck := entry.SkipRevisionCheck
 	FromPbEntryToExistingEntry(message, entry)
+	entry.Revision = revision
+	entry.SkipRevisionCheck = skipRevisionCheck
 
 	return nil
 }
