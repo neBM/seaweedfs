@@ -17,6 +17,8 @@ import (
 	"github.com/seaweedfs/seaweedfs/weed/util"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -28,6 +30,7 @@ type createEntryTestServer struct {
 	lastUID       uint32
 	lastGID       uint32
 	lastMode      uint32
+	lastExpected  *int64
 	entries       map[string]*filer_pb.Entry
 }
 
@@ -37,6 +40,7 @@ type createEntrySnapshot struct {
 	uid       uint32
 	gid       uint32
 	mode      uint32
+	expected  *int64
 }
 
 func (s *createEntryTestServer) CreateEntry(ctx context.Context, req *filer_pb.CreateEntryRequest) (*filer_pb.CreateEntryResponse, error) {
@@ -61,11 +65,18 @@ func (s *createEntryTestServer) CreateEntry(ctx context.Context, req *filer_pb.C
 func (s *createEntryTestServer) UpdateEntry(ctx context.Context, req *filer_pb.UpdateEntryRequest) (*filer_pb.UpdateEntryResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.lastExpected = req.ExpectedEntryRevision
 	if req.GetEntry() != nil {
+		key := req.GetDirectory() + "/" + req.GetEntry().GetName()
+		if existing := s.entries[key]; existing != nil && req.ExpectedEntryRevision != nil {
+			if existing.GetEntryRevision() != req.GetExpectedEntryRevision() {
+				return nil, status.Error(codes.FailedPrecondition, "entry revision changed")
+			}
+		}
 		if s.entries == nil {
 			s.entries = make(map[string]*filer_pb.Entry)
 		}
-		s.entries[req.GetDirectory()+"/"+req.GetEntry().GetName()] = proto.Clone(req.GetEntry()).(*filer_pb.Entry)
+		s.entries[key] = proto.Clone(req.GetEntry()).(*filer_pb.Entry)
 	}
 	return &filer_pb.UpdateEntryResponse{}, nil
 }
@@ -88,6 +99,7 @@ func (s *createEntryTestServer) snapshot() createEntrySnapshot {
 		uid:       s.lastUID,
 		gid:       s.lastGID,
 		mode:      s.lastMode,
+		expected:  s.lastExpected,
 	}
 }
 
@@ -285,6 +297,89 @@ func TestDeferredCreateRemainsVisibleAfterDirectorySwitchesToReadThrough(t *test
 	}
 	if entry.GetName() != "tmp_pack" {
 		t.Fatalf("maybeLoadEntry after hot invalidation name = %q, want tmp_pack", entry.GetName())
+	}
+}
+
+func TestCachedEntryRoundTripDropsUnknownRevision(t *testing.T) {
+	wfs, _ := newCreateTestWFS(t)
+
+	fullPath := util.FullPath("/cached.txt")
+	if err := wfs.metaCache.InsertEntry(context.Background(), &filer.Entry{
+		FullPath: fullPath,
+		Attr: filer.Attr{
+			Mode:   0o644,
+			Uid:    1000,
+			Gid:    1000,
+			Crtime: time.Unix(123, 0),
+			Mtime:  time.Unix(123, 0),
+			Ctime:  time.Unix(123, 0),
+		},
+		Revision: 7,
+	}); err != nil {
+		t.Fatalf("InsertEntry: %v", err)
+	}
+
+	entry, status := wfs.maybeLoadEntry(fullPath)
+	if status != fuse.OK {
+		t.Fatalf("maybeLoadEntry status = %v, want OK", status)
+	}
+	if entry.EntryRevision != nil {
+		t.Fatalf("cached entry revision = %v, want nil after cache round-trip", entry.GetEntryRevision())
+	}
+}
+
+func TestSetAttrFromCachedEntryDoesNotSendZeroRevision(t *testing.T) {
+	wfs, testServer := newCreateTestWFS(t)
+
+	fullPath := util.FullPath("/cached.txt")
+	inode := wfs.inodeToPath.Lookup(fullPath, 123, false, false, 0, true)
+	remoteEntry := &filer_pb.Entry{
+		Name: "cached.txt",
+		Attributes: &filer_pb.FuseAttributes{
+			FileMode: 0o644,
+			Uid:      0,
+			Gid:      0,
+			Inode:    inode,
+			Crtime:   123,
+			Mtime:    123,
+			Ctime:    123,
+		},
+	}
+	revision := int64(7)
+	remoteEntry.EntryRevision = &revision
+	testServer.entries = map[string]*filer_pb.Entry{
+		"/cached.txt": proto.Clone(remoteEntry).(*filer_pb.Entry),
+	}
+
+	if err := wfs.metaCache.InsertEntry(context.Background(), filer.FromPbEntry("/", remoteEntry)); err != nil {
+		t.Fatalf("InsertEntry: %v", err)
+	}
+
+	status := wfs.SetAttr(make(chan struct{}), &fuse.SetAttrIn{
+		SetAttrInCommon: fuse.SetAttrInCommon{
+			InHeader: fuse.InHeader{
+				NodeId: inode,
+				Caller: fuse.Caller{
+					Owner: fuse.Owner{
+						Uid: 0,
+						Gid: 0,
+					},
+				},
+			},
+			Valid: fuse.FATTR_UID | fuse.FATTR_GID,
+			Owner: fuse.Owner{
+				Uid: 1000,
+				Gid: 1000,
+			},
+		},
+	}, &fuse.AttrOut{})
+	if status != fuse.OK {
+		t.Fatalf("SetAttr status = %v, want OK", status)
+	}
+
+	snapshot := testServer.snapshot()
+	if snapshot.expected != nil {
+		t.Fatalf("UpdateEntry expected revision = %d, want nil for cached entry", *snapshot.expected)
 	}
 }
 

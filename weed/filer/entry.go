@@ -121,8 +121,12 @@ func (entry *Entry) ToExistingProtoEntry(message *filer_pb.Entry) {
 	message.RemoteEntry = entry.Remote
 	message.Quota = entry.Quota
 	message.WormEnforcedAtTsNs = entry.WORMEnforcedAtTsNs
-	revision := entry.Revision
-	message.EntryRevision = &revision
+	if entry.Revision != 0 {
+		revision := entry.Revision
+		message.EntryRevision = &revision
+	} else {
+		message.EntryRevision = nil
+	}
 }
 
 func FromPbEntryToExistingEntry(message *filer_pb.Entry, fsEntry *Entry) {
