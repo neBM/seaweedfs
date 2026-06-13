@@ -30,6 +30,7 @@ type createEntryTestServer struct {
 	lastUID       uint32
 	lastGID       uint32
 	lastMode      uint32
+	lastCreateExpected *int64
 	lastExpected  *int64
 	entries       map[string]*filer_pb.Entry
 }
@@ -40,6 +41,7 @@ type createEntrySnapshot struct {
 	uid       uint32
 	gid       uint32
 	mode      uint32
+	createExpected *int64
 	expected  *int64
 }
 
@@ -47,17 +49,24 @@ func (s *createEntryTestServer) CreateEntry(ctx context.Context, req *filer_pb.C
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastDirectory = req.GetDirectory()
+	s.lastCreateExpected = req.ExpectedEntryRevision
 	if req.GetEntry() != nil {
+		key := req.GetDirectory() + "/" + req.GetEntry().GetName()
 		s.lastName = req.GetEntry().GetName()
 		if req.GetEntry().GetAttributes() != nil {
 			s.lastUID = req.GetEntry().GetAttributes().GetUid()
 			s.lastGID = req.GetEntry().GetAttributes().GetGid()
 			s.lastMode = req.GetEntry().GetAttributes().GetFileMode()
 		}
+		if existing := s.entries[key]; existing != nil && req.ExpectedEntryRevision != nil {
+			if existing.GetEntryRevision() != req.GetExpectedEntryRevision() {
+				return nil, status.Error(codes.FailedPrecondition, "entry revision changed")
+			}
+		}
 		if s.entries == nil {
 			s.entries = make(map[string]*filer_pb.Entry)
 		}
-		s.entries[req.GetDirectory()+"/"+req.GetEntry().GetName()] = proto.Clone(req.GetEntry()).(*filer_pb.Entry)
+		s.entries[key] = proto.Clone(req.GetEntry()).(*filer_pb.Entry)
 	}
 	return &filer_pb.CreateEntryResponse{}, nil
 }
@@ -99,6 +108,7 @@ func (s *createEntryTestServer) snapshot() createEntrySnapshot {
 		uid:       s.lastUID,
 		gid:       s.lastGID,
 		mode:      s.lastMode,
+		createExpected: s.lastCreateExpected,
 		expected:  s.lastExpected,
 	}
 }
@@ -380,6 +390,56 @@ func TestSetAttrFromCachedEntryDoesNotSendZeroRevision(t *testing.T) {
 	snapshot := testServer.snapshot()
 	if snapshot.expected != nil {
 		t.Fatalf("UpdateEntry expected revision = %d, want nil for cached entry", *snapshot.expected)
+	}
+}
+
+// Covers the 850de2457 regression class on the close/fsync metadata flush
+// path: cached entries lose revision metadata on the meta-cache round-trip,
+// so CreateEntry-based metadata flushes must treat them as "unknown revision"
+// instead of sending ExpectedEntryRevision=0.
+func TestFlushMetadataFromCachedEntryDoesNotSendZeroRevision(t *testing.T) {
+	wfs, testServer := newCreateTestWFS(t)
+
+	fullPath := util.FullPath("/cached-flush.txt")
+	inode := wfs.inodeToPath.Lookup(fullPath, 123, false, false, 0, true)
+	remoteEntry := &filer_pb.Entry{
+		Name: "cached-flush.txt",
+		Attributes: &filer_pb.FuseAttributes{
+			FileMode: 0o644,
+			Uid:      0,
+			Gid:      0,
+			Inode:    inode,
+			Crtime:   123,
+			Mtime:    123,
+			Ctime:    123,
+		},
+	}
+	revision := int64(7)
+	remoteEntry.EntryRevision = &revision
+	testServer.entries = map[string]*filer_pb.Entry{
+		"/cached-flush.txt": proto.Clone(remoteEntry).(*filer_pb.Entry),
+	}
+
+	if err := wfs.metaCache.InsertEntry(context.Background(), filer.FromPbEntry("/", remoteEntry)); err != nil {
+		t.Fatalf("InsertEntry: %v", err)
+	}
+
+	cachedEntry, status := wfs.maybeLoadEntry(fullPath)
+	if status != fuse.OK {
+		t.Fatalf("maybeLoadEntry status = %v, want OK", status)
+	}
+
+	fh := wfs.fhMap.AcquireFileHandle(wfs, inode, cachedEntry)
+	fh.RememberPath(fullPath)
+	fh.dirtyMetadata = true
+
+	if err := wfs.flushMetadataToFiler(fh, "/", "cached-flush.txt", 0, 0); err != nil {
+		t.Fatalf("flushMetadataToFiler: %v", err)
+	}
+
+	snapshot := testServer.snapshot()
+	if snapshot.createExpected != nil {
+		t.Fatalf("CreateEntry expected revision = %d, want nil for cached entry", *snapshot.createExpected)
 	}
 }
 
