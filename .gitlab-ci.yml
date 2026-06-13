@@ -1,0 +1,146 @@
+workflow:
+  auto_cancel:
+    on_new_commit: interruptible
+    on_job_failure: all
+  rules:
+    - if: $CI_COMMIT_MESSAGE =~ /\[skip ci\]/i
+      when: never
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS && $CI_PIPELINE_SOURCE == "push"
+      when: never
+    - when: always
+
+stages:
+  - verify
+  - integration
+
+default:
+  interruptible: true
+  before_script:
+    - mkdir -p .artifacts/ci-logs
+
+.mount_changes: &mount_changes
+  - .gitlab-ci.yml
+  - go.mod
+  - go.sum
+  - scripts/ci/**/*
+  - weed/**/*
+  - test/fuse_integration/**/*
+
+.rust_volume_changes: &rust_volume_changes
+  - .gitlab-ci.yml
+  - go.mod
+  - go.sum
+  - scripts/ci/**/*
+  - seaweed-volume/**/*
+  - test/volume_server/**/*
+  - weed/pb/volume_server.proto
+  - weed/pb/volume_server_pb/**/*
+
+.rules_mount: &rules_mount
+  - if: '$CI_PIPELINE_SOURCE == "schedule"'
+  - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    changes: *mount_changes
+  - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    changes: *mount_changes
+  - when: never
+
+.rules_rust_volume: &rules_rust_volume
+  - if: '$CI_PIPELINE_SOURCE == "schedule"'
+  - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    changes: *rust_volume_changes
+  - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    changes: *rust_volume_changes
+  - when: never
+
+.fuse_artifacts: &fuse_artifacts
+  when: always
+  paths:
+    - .artifacts/ci-logs/
+  expire_in: 7 days
+
+verify:mount-unit:
+  stage: verify
+  image: golang:1.25-bookworm
+  tags:
+    - amd64
+  before_script:
+    - mkdir -p .artifacts/ci-logs
+    - bash scripts/ci/install-docker-cli.sh
+  script:
+    - bash scripts/ci/run-mount-unit.sh
+  artifacts: *fuse_artifacts
+  timeout: 20 minutes
+  rules: *rules_mount
+
+verify:fuse-runner-smoke:
+  stage: verify
+  image: golang:1.25-bookworm
+  tags:
+    - amd64
+  before_script:
+    - mkdir -p .artifacts/ci-logs
+    - bash scripts/ci/install-fuse-deps.sh
+    - bash scripts/ci/build-weed.sh
+  script:
+    - bash scripts/ci/run-fuse-runner-smoke.sh
+  artifacts: *fuse_artifacts
+  timeout: 20 minutes
+  rules: *rules_mount
+
+integration:fuse:
+  stage: integration
+  image: golang:1.25-bookworm
+  tags:
+    - amd64
+  before_script:
+    - mkdir -p .artifacts/ci-logs
+    - bash scripts/ci/install-docker-cli.sh
+    - bash scripts/ci/install-fuse-deps.sh
+    - bash scripts/ci/build-weed.sh
+  script:
+    - bash scripts/ci/run-fuse-integration.sh
+  artifacts: *fuse_artifacts
+  timeout: 60 minutes
+  rules: *rules_mount
+
+integration:rust-volume:unit:
+  stage: integration
+  image: rust:1.89-bookworm
+  before_script:
+    - mkdir -p .artifacts/ci-logs
+    - bash scripts/ci/install-rust-deps.sh
+  script:
+    - bash scripts/ci/run-rust-volume-unit.sh
+  artifacts: *fuse_artifacts
+  timeout: 20 minutes
+  rules: *rules_rust_volume
+
+integration:rust-volume:smoke:
+  stage: integration
+  image: rust:1.89-bookworm
+  before_script:
+    - mkdir -p .artifacts/ci-logs
+    - bash scripts/ci/install-rust-deps.sh
+    - bash scripts/ci/install-go-toolchain.sh
+  script:
+    - bash scripts/ci/run-rust-volume-integration.sh
+  artifacts: *fuse_artifacts
+  timeout: 30 minutes
+  rules: *rules_rust_volume
+
+integration:rust-volume:go:
+  stage: integration
+  image: rust:1.89-bookworm
+  parallel:
+    matrix:
+      - TEST_TYPE: ["grpc", "http"]
+        SHARD: ["1", "2", "3"]
+  before_script:
+    - mkdir -p .artifacts/ci-logs
+    - bash scripts/ci/install-rust-deps.sh
+    - bash scripts/ci/install-go-toolchain.sh
+  script:
+    - bash scripts/ci/run-rust-volume-go-shard.sh "$TEST_TYPE" "$SHARD"
+  artifacts: *fuse_artifacts
+  timeout: 45 minutes
+  rules: *rules_rust_volume
