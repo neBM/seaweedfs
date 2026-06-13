@@ -27,7 +27,7 @@ case "$test_type:$shard" in
     ;;
 esac
 
-"$(dirname "$0")/build-rust-volume-artifacts.sh"
+bash "$(dirname "$0")/build-rust-volume-artifacts.sh"
 
 export PATH="$root/.cache/go-toolchain/current/bin:$PATH"
 export WEED_BINARY="$root/weed/weed"

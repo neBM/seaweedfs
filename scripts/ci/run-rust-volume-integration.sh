@@ -7,7 +7,7 @@ source "$(dirname "$0")/common.sh"
 root="$(seaweed_repo_root)"
 log_dir="$(ci_log_dir)"
 
-"$(dirname "$0")/build-rust-volume-artifacts.sh"
+bash "$(dirname "$0")/build-rust-volume-artifacts.sh"
 
 export PATH="$root/.cache/go-toolchain/current/bin:$PATH"
 export WEED_BINARY="$root/weed/weed"
