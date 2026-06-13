@@ -2,6 +2,7 @@ package mount
 
 import (
 	"context"
+	"errors"
 	"net"
 	"path/filepath"
 	"sync"
@@ -16,33 +17,34 @@ import (
 	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
 	"github.com/seaweedfs/seaweedfs/weed/util"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
 type createEntryTestServer struct {
 	filer_pb.UnimplementedSeaweedFilerServer
-	mu            sync.Mutex
-	lastDirectory string
-	lastName      string
-	lastUID       uint32
-	lastGID       uint32
-	lastMode      uint32
+	mu                 sync.Mutex
+	lastDirectory      string
+	lastName           string
+	lastUID            uint32
+	lastGID            uint32
+	lastMode           uint32
 	lastCreateExpected *int64
-	lastExpected  *int64
-	entries       map[string]*filer_pb.Entry
+	lastExpected       *int64
+	entries            map[string]*filer_pb.Entry
+	store              filer.FilerStore
 }
 
 type createEntrySnapshot struct {
-	directory string
-	name      string
-	uid       uint32
-	gid       uint32
-	mode      uint32
+	directory      string
+	name           string
+	uid            uint32
+	gid            uint32
+	mode           uint32
 	createExpected *int64
-	expected  *int64
+	expected       *int64
 }
 
 func (s *createEntryTestServer) CreateEntry(ctx context.Context, req *filer_pb.CreateEntryRequest) (*filer_pb.CreateEntryResponse, error) {
@@ -58,15 +60,21 @@ func (s *createEntryTestServer) CreateEntry(ctx context.Context, req *filer_pb.C
 			s.lastGID = req.GetEntry().GetAttributes().GetGid()
 			s.lastMode = req.GetEntry().GetAttributes().GetFileMode()
 		}
-		if existing := s.entries[key]; existing != nil && req.ExpectedEntryRevision != nil {
-			if existing.GetEntryRevision() != req.GetExpectedEntryRevision() {
-				return nil, status.Error(codes.FailedPrecondition, "entry revision changed")
+		if s.store != nil {
+			if err := s.createOrUpdateStoredEntry(ctx, req.GetDirectory(), req.GetEntry(), req.ExpectedEntryRevision); err != nil {
+				return nil, err
 			}
+		} else {
+			if existing := s.entries[key]; existing != nil && req.ExpectedEntryRevision != nil {
+				if existing.GetEntryRevision() != req.GetExpectedEntryRevision() {
+					return nil, status.Error(codes.FailedPrecondition, "entry revision changed")
+				}
+			}
+			if s.entries == nil {
+				s.entries = make(map[string]*filer_pb.Entry)
+			}
+			s.entries[key] = proto.Clone(req.GetEntry()).(*filer_pb.Entry)
 		}
-		if s.entries == nil {
-			s.entries = make(map[string]*filer_pb.Entry)
-		}
-		s.entries[key] = proto.Clone(req.GetEntry()).(*filer_pb.Entry)
 	}
 	return &filer_pb.CreateEntryResponse{}, nil
 }
@@ -77,15 +85,21 @@ func (s *createEntryTestServer) UpdateEntry(ctx context.Context, req *filer_pb.U
 	s.lastExpected = req.ExpectedEntryRevision
 	if req.GetEntry() != nil {
 		key := req.GetDirectory() + "/" + req.GetEntry().GetName()
-		if existing := s.entries[key]; existing != nil && req.ExpectedEntryRevision != nil {
-			if existing.GetEntryRevision() != req.GetExpectedEntryRevision() {
-				return nil, status.Error(codes.FailedPrecondition, "entry revision changed")
+		if s.store != nil {
+			if err := s.updateStoredEntry(ctx, req.GetDirectory(), req.GetEntry(), req.ExpectedEntryRevision); err != nil {
+				return nil, err
 			}
+		} else {
+			if existing := s.entries[key]; existing != nil && req.ExpectedEntryRevision != nil {
+				if existing.GetEntryRevision() != req.GetExpectedEntryRevision() {
+					return nil, status.Error(codes.FailedPrecondition, "entry revision changed")
+				}
+			}
+			if s.entries == nil {
+				s.entries = make(map[string]*filer_pb.Entry)
+			}
+			s.entries[key] = proto.Clone(req.GetEntry()).(*filer_pb.Entry)
 		}
-		if s.entries == nil {
-			s.entries = make(map[string]*filer_pb.Entry)
-		}
-		s.entries[key] = proto.Clone(req.GetEntry()).(*filer_pb.Entry)
 	}
 	return &filer_pb.UpdateEntryResponse{}, nil
 }
@@ -93,6 +107,16 @@ func (s *createEntryTestServer) UpdateEntry(ctx context.Context, req *filer_pb.U
 func (s *createEntryTestServer) LookupDirectoryEntry(ctx context.Context, req *filer_pb.LookupDirectoryEntryRequest) (*filer_pb.LookupDirectoryEntryResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.store != nil {
+		entry, err := s.store.FindEntry(ctx, util.JoinPath(req.GetDirectory(), req.GetName()))
+		if err == filer_pb.ErrNotFound {
+			return &filer_pb.LookupDirectoryEntryResponse{}, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		return &filer_pb.LookupDirectoryEntryResponse{Entry: entry.ToProtoEntry()}, nil
+	}
 	if entry, found := s.entries[req.GetDirectory()+"/"+req.GetName()]; found {
 		return &filer_pb.LookupDirectoryEntryResponse{Entry: proto.Clone(entry).(*filer_pb.Entry)}, nil
 	}
@@ -103,17 +127,74 @@ func (s *createEntryTestServer) snapshot() createEntrySnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return createEntrySnapshot{
-		directory: s.lastDirectory,
-		name:      s.lastName,
-		uid:       s.lastUID,
-		gid:       s.lastGID,
-		mode:      s.lastMode,
+		directory:      s.lastDirectory,
+		name:           s.lastName,
+		uid:            s.lastUID,
+		gid:            s.lastGID,
+		mode:           s.lastMode,
 		createExpected: s.lastCreateExpected,
-		expected:  s.lastExpected,
+		expected:       s.lastExpected,
 	}
 }
 
+func (s *createEntryTestServer) createOrUpdateStoredEntry(ctx context.Context, directory string, entryPb *filer_pb.Entry, expectedRevision *int64) error {
+	if entryPb == nil {
+		return nil
+	}
+	fullPath := util.JoinPath(directory, entryPb.GetName())
+	newEntry := filer.FromPbEntry(directory, entryPb)
+	existing, err := s.store.FindEntry(ctx, fullPath)
+	if err != nil && err != filer_pb.ErrNotFound {
+		return err
+	}
+	if existing == nil {
+		if expectedRevision != nil && *expectedRevision != 0 {
+			return status.Error(codes.FailedPrecondition, "entry revision changed")
+		}
+		if err := s.store.InsertEntry(ctx, newEntry); err != nil {
+			return err
+		}
+		return nil
+	}
+	return s.updateStoredEntry(ctx, directory, entryPb, expectedRevision)
+}
+
+func (s *createEntryTestServer) updateStoredEntry(ctx context.Context, directory string, entryPb *filer_pb.Entry, expectedRevision *int64) error {
+	if entryPb == nil {
+		return nil
+	}
+	fullPath := util.JoinPath(directory, entryPb.GetName())
+	existing, err := s.store.FindEntry(ctx, fullPath)
+	if err != nil {
+		if err == filer_pb.ErrNotFound {
+			return status.Error(codes.NotFound, "entry not found")
+		}
+		return err
+	}
+
+	newEntry := filer.FromPbEntry(directory, entryPb)
+	newEntry.Attr.Crtime = existing.Attr.Crtime
+	if expectedRevision != nil {
+		newEntry.Revision = *expectedRevision
+		newEntry.SkipRevisionCheck = false
+	} else {
+		newEntry.Revision = existing.Revision
+		newEntry.SkipRevisionCheck = true
+	}
+	if err := s.store.UpdateEntry(ctx, newEntry); err != nil {
+		if errors.Is(err, filer.ErrMetadataRevisionMismatch) {
+			return status.Error(codes.FailedPrecondition, "entry revision changed")
+		}
+		return err
+	}
+	return nil
+}
+
 func newCreateTestWFS(t *testing.T) (*WFS, *createEntryTestServer) {
+	return newCreateTestWFSWithStore(t, nil)
+}
+
+func newCreateTestWFSWithStore(t *testing.T, store filer.FilerStore) (*WFS, *createEntryTestServer) {
 	t.Helper()
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -125,10 +206,13 @@ func newCreateTestWFS(t *testing.T) (*WFS, *createEntryTestServer) {
 	})
 
 	server := pb.NewGrpcServer()
-	testServer := &createEntryTestServer{}
+	testServer := &createEntryTestServer{store: store}
 	filer_pb.RegisterSeaweedFilerServer(server, testServer)
 	go server.Serve(listener)
 	t.Cleanup(server.Stop)
+	if store != nil {
+		t.Cleanup(store.Shutdown)
+	}
 
 	uidGidMapper, err := meta_cache.NewUidGidMapper("", "")
 	if err != nil {
