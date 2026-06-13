@@ -21,10 +21,8 @@ type registryUploadPaths struct {
 }
 
 // TestRegistryStyleUploadCachedMetadataFlush exercises the registry-like
-// open/write/sync/close and finalize-rename sequence against a real FUSE mount.
-// The deterministic stale-revision red proof still lives in weed/mount unit
-// tests because the local leveldb2 filer store used by this harness does not
-// enforce entry-revision compare-and-swap.
+// open/write/sync/close and finalize-rename sequence against a real FUSE mount
+// on the default leveldb2 filer store. This is still the fast smoke path.
 func TestRegistryStyleUploadCachedMetadataFlush(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live FUSE registry upload regression in short mode")
@@ -33,6 +31,29 @@ func TestRegistryStyleUploadCachedMetadataFlush(t *testing.T) {
 	config := DefaultTestConfig()
 	config.DirAutoCreate = false
 	config.MountOptions = append(config.MountOptions, "-umask=000")
+
+	runRegistryStyleUploadCachedMetadataFlush(t, config)
+}
+
+// TestRegistryStyleUploadCachedMetadataFlushRevisionAwareStore runs the same
+// registry sequence against postgres2 so the live harness enforces entry
+// revisions and can go red on stale metadata CAS regressions.
+func TestRegistryStyleUploadCachedMetadataFlushRevisionAwareStore(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping postgres-backed FUSE registry upload regression in short mode")
+	}
+
+	config := DefaultTestConfig()
+	config.DirAutoCreate = false
+	config.EnableDebug = true
+	config.MountOptions = append(config.MountOptions, "-umask=000")
+	config.FilerStore = DefaultPostgres2FilerStoreConfig()
+
+	runRegistryStyleUploadCachedMetadataFlush(t, config)
+}
+
+func runRegistryStyleUploadCachedMetadataFlush(t *testing.T, config *TestConfig) {
+	t.Helper()
 
 	framework := NewFuseTestFramework(t, config)
 	defer framework.Cleanup()
@@ -126,8 +147,10 @@ func dirEntriesContain(entries []os.DirEntry, name string) bool {
 func rewriteExistingFileAndSync(t *testing.T, path string, content []byte) {
 	t.Helper()
 
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
-	require.NoError(t, err, "open existing registry upload file %s", path)
+	require.NoError(t, os.Truncate(path, 0), "truncate existing registry upload file %s", path)
+
+	file, err := os.OpenFile(path, os.O_WRONLY, 0o644)
+	require.NoError(t, err, "open truncated registry upload file %s", path)
 
 	if _, err := file.Write(content); err != nil {
 		file.Close()

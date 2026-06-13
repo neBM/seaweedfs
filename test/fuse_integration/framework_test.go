@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -23,25 +24,28 @@ import (
 // It starts explicit master, volume, filer, and mount processes so the harness
 // is independent of weed mini startup behavior.
 type FuseTestFramework struct {
-	t              *testing.T
-	tempDir        string
-	mountPoint     string
-	dataDir        string
-	logDir         string
-	masterProcess  *os.Process
-	volumeProcess  *os.Process
-	filerProcess   *os.Process
-	mountProcess   *os.Process
-	filerAddr      string
-	masterPort     int
-	masterGrpcPort int
-	volumePort     int
-	volumeGrpcPort int
-	filerPort      int
-	filerGrpcPort  int
-	weedBinary     string
-	weedBinaryErr  error
-	isSetup        bool
+	t                     *testing.T
+	tempDir               string
+	mountPoint            string
+	dataDir               string
+	logDir                string
+	masterProcess         *os.Process
+	volumeProcess         *os.Process
+	filerProcess          *os.Process
+	mountProcess          *os.Process
+	filerAddr             string
+	masterPort            int
+	masterGrpcPort        int
+	volumePort            int
+	volumeGrpcPort        int
+	filerPort             int
+	filerGrpcPort         int
+	weedBinary            string
+	weedBinaryErr         error
+	filerConfigPath       string
+	postgresContainerName string
+	postgresHostPort      int
+	isSetup               bool
 }
 
 var (
@@ -49,6 +53,25 @@ var (
 	weedBinaryPath string
 	weedBinaryErr  error
 )
+
+type FilerStoreKind string
+
+const (
+	FilerStoreLevelDB2  FilerStoreKind = "leveldb2"
+	FilerStorePostgres2 FilerStoreKind = "postgres2"
+)
+
+type PostgresBackendConfig struct {
+	Image    string
+	Username string
+	Password string
+	Database string
+}
+
+type FilerStoreConfig struct {
+	Kind     FilerStoreKind
+	Postgres *PostgresBackendConfig
+}
 
 // TestConfig holds configuration for FUSE tests
 type TestConfig struct {
@@ -59,8 +82,21 @@ type TestConfig struct {
 	NumVolumes    int
 	EnableDebug   bool
 	DirAutoCreate bool
+	FilerStore    FilerStoreConfig
 	MountOptions  []string
 	SkipCleanup   bool // for debugging failed tests
+}
+
+func DefaultPostgres2FilerStoreConfig() FilerStoreConfig {
+	return FilerStoreConfig{
+		Kind: FilerStorePostgres2,
+		Postgres: &PostgresBackendConfig{
+			Image:    "postgres:16-alpine",
+			Username: "seaweedfs",
+			Password: "seaweedfs",
+			Database: "seaweedfs",
+		},
+	}
 }
 
 // DefaultTestConfig returns a default configuration for FUSE tests
@@ -73,8 +109,11 @@ func DefaultTestConfig() *TestConfig {
 		NumVolumes:    3,
 		EnableDebug:   false,
 		DirAutoCreate: true,
-		MountOptions:  []string{},
-		SkipCleanup:   false,
+		FilerStore: FilerStoreConfig{
+			Kind: FilerStoreLevelDB2,
+		},
+		MountOptions: []string{},
+		SkipCleanup:  false,
 	}
 }
 
@@ -146,6 +185,10 @@ func (f *FuseTestFramework) Setup(config *TestConfig) error {
 		}
 	}
 
+	if err := f.prepareFilerStore(config); err != nil {
+		return fmt.Errorf("prepare filer store: %w", err)
+	}
+
 	if err := f.startMaster(config); err != nil {
 		return fmt.Errorf("failed to start weed master: %v", err)
 	}
@@ -213,6 +256,7 @@ func (f *FuseTestFramework) Remount(config *TestConfig) error {
 func (f *FuseTestFramework) Cleanup() {
 	if f.t.Failed() {
 		f.DumpLogs()
+		f.dumpPostgresLog()
 	}
 
 	if f.mountProcess != nil {
@@ -225,6 +269,10 @@ func (f *FuseTestFramework) Cleanup() {
 			proc.Signal(syscall.SIGTERM)
 			proc.Wait()
 		}
+	}
+
+	if f.postgresContainerName != "" {
+		f.stopPostgresContainer()
 	}
 
 	f.copyLogsForCI()
@@ -292,6 +340,22 @@ func (f *FuseTestFramework) ReadProcessLog(name string) ([]byte, error) {
 	return os.ReadFile(filepath.Join(f.logDir, name+".log"))
 }
 
+func (f *FuseTestFramework) dumpPostgresLog() {
+	if f.postgresContainerName == "" {
+		return
+	}
+	output, err := exec.Command("docker", "logs", f.postgresContainerName).CombinedOutput()
+	if err != nil {
+		f.t.Logf("[postgres log] (not available: %v)", err)
+		return
+	}
+	const maxTail = 16 * 1024
+	if len(output) > maxTail {
+		output = output[len(output)-maxTail:]
+	}
+	f.t.Logf("[postgres log tail (%d bytes)]\n%s", len(output), string(output))
+}
+
 // dumpLog prints the last lines of a process log file to the test output
 // for debugging when a service fails to start or a test fails.
 func (f *FuseTestFramework) dumpLog(name string) {
@@ -320,6 +384,11 @@ func (f *FuseTestFramework) copyLogsForCI() {
 			continue
 		}
 		os.WriteFile(filepath.Join(ciLogDir, name+".log"), data, 0644)
+	}
+	if f.postgresContainerName != "" {
+		if data, err := exec.Command("docker", "logs", f.postgresContainerName).CombinedOutput(); err == nil {
+			os.WriteFile(filepath.Join(ciLogDir, "postgres.log"), data, 0644)
+		}
 	}
 }
 
@@ -397,6 +466,154 @@ func (f *FuseTestFramework) startFiler(config *TestConfig) error {
 	}
 	f.filerProcess = proc
 	return nil
+}
+
+func (f *FuseTestFramework) prepareFilerStore(config *TestConfig) error {
+	if config == nil {
+		config = DefaultTestConfig()
+	}
+	switch config.FilerStore.Kind {
+	case "", FilerStoreLevelDB2:
+		return f.removeFilerConfig()
+	case FilerStorePostgres2:
+		pg := config.FilerStore.Postgres
+		if pg == nil {
+			return fmt.Errorf("postgres2 filer store requires postgres config")
+		}
+		if _, err := exec.LookPath("docker"); err != nil {
+			f.t.Skip("docker not available in PATH, skipping postgres-backed FUSE regression")
+		}
+		if err := f.startPostgresContainer(pg); err != nil {
+			return err
+		}
+		if err := f.writePostgresFilerConfig(pg); err != nil {
+			f.stopPostgresContainer()
+			return err
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported filer store kind %q", config.FilerStore.Kind)
+	}
+}
+
+func (f *FuseTestFramework) removeFilerConfig() error {
+	if f.filerConfigPath == "" {
+		f.filerConfigPath = filepath.Join(f.tempDir, "filer.toml")
+	}
+	if err := os.Remove(f.filerConfigPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove filer config: %w", err)
+	}
+	return nil
+}
+
+func (f *FuseTestFramework) writePostgresFilerConfig(config *PostgresBackendConfig) error {
+	f.filerConfigPath = filepath.Join(f.tempDir, "filer.toml")
+	content := fmt.Sprintf(`[postgres2]
+enabled = true
+createTable = """
+  CREATE TABLE IF NOT EXISTS "%%s" (
+    dirhash   BIGINT,
+    name      VARCHAR(65535),
+    directory VARCHAR(65535),
+    meta      bytea,
+    PRIMARY KEY (dirhash, name)
+  );
+"""
+hostname = "127.0.0.1"
+port = %d
+username = "%s"
+password = "%s"
+database = "%s"
+schema = ""
+sslmode = "disable"
+connection_max_idle = 5
+connection_max_open = 10
+connection_max_lifetime_seconds = 60
+pgbouncer_compatible = false
+enableUpsert = true
+upsertQuery = """
+  INSERT INTO "%%[1]s" (dirhash, name, directory, meta)
+    VALUES($1, $2, $3, $4)
+    ON CONFLICT (dirhash, name) DO UPDATE SET
+      directory=EXCLUDED.directory,
+      meta=EXCLUDED.meta
+"""
+`, f.postgresHostPort, config.Username, config.Password, config.Database)
+	if err := os.WriteFile(f.filerConfigPath, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("write postgres filer config: %w", err)
+	}
+	return nil
+}
+
+func (f *FuseTestFramework) startPostgresContainer(config *PostgresBackendConfig) error {
+	name := fmt.Sprintf("seaweedfs-fuse-pg-%d-%d", os.Getpid(), time.Now().UnixNano())
+	args := []string{
+		"run", "-d", "--rm",
+		"--name", name,
+		"-e", "POSTGRES_USER=" + config.Username,
+		"-e", "POSTGRES_PASSWORD=" + config.Password,
+		"-e", "POSTGRES_DB=" + config.Database,
+		"-p", "127.0.0.1::5432",
+		config.Image,
+	}
+	output, err := exec.Command("docker", args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("start postgres container: %w\n%s", err, string(output))
+	}
+	f.postgresContainerName = name
+	port, err := f.lookupDockerMappedPort(name, "5432/tcp")
+	if err != nil {
+		f.stopPostgresContainer()
+		return err
+	}
+	f.postgresHostPort = port
+	if err := f.waitForPostgresReady(config); err != nil {
+		f.stopPostgresContainer()
+		return err
+	}
+	return nil
+}
+
+func (f *FuseTestFramework) stopPostgresContainer() {
+	if f.postgresContainerName == "" {
+		return
+	}
+	_ = exec.Command("docker", "rm", "-f", f.postgresContainerName).Run()
+	f.postgresContainerName = ""
+	f.postgresHostPort = 0
+}
+
+func (f *FuseTestFramework) lookupDockerMappedPort(containerName, containerPort string) (int, error) {
+	output, err := exec.Command(
+		"docker", "inspect", "-f",
+		fmt.Sprintf(`{{(index (index .NetworkSettings.Ports %q) 0).HostPort}}`, containerPort),
+		containerName,
+	).CombinedOutput()
+	if err != nil {
+		return 0, fmt.Errorf("inspect docker port mapping: %w\n%s", err, string(output))
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil {
+		return 0, fmt.Errorf("parse docker port mapping %q: %w", strings.TrimSpace(string(output)), err)
+	}
+	return port, nil
+}
+
+func (f *FuseTestFramework) waitForPostgresReady(config *PostgresBackendConfig) error {
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		cmd := exec.Command(
+			"docker", "exec", f.postgresContainerName,
+			"pg_isready",
+			"-U", config.Username,
+			"-d", config.Database,
+		)
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+		time.Sleep(1 * time.Second)
+	}
+	return fmt.Errorf("postgres container %s not ready within timeout", f.postgresContainerName)
 }
 
 // mountFuse mounts the SeaweedFS FUSE filesystem
