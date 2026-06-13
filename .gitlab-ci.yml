@@ -105,7 +105,7 @@ integration:fuse:
 
 integration:rust-volume:unit:
   stage: integration
-  image: rust:1.89-bookworm
+  image: rust:1.91.1-bookworm
   before_script:
     - mkdir -p .artifacts/ci-logs
     - bash scripts/ci/install-rust-deps.sh
@@ -117,7 +117,7 @@ integration:rust-volume:unit:
 
 integration:rust-volume:smoke:
   stage: integration
-  image: rust:1.89-bookworm
+  image: rust:1.91.1-bookworm
   before_script:
     - mkdir -p .artifacts/ci-logs
     - bash scripts/ci/install-rust-deps.sh
@@ -130,7 +130,7 @@ integration:rust-volume:smoke:
 
 integration:rust-volume:go:
   stage: integration
-  image: rust:1.89-bookworm
+  image: rust:1.91.1-bookworm
   parallel:
     matrix:
       - TEST_TYPE: ["grpc", "http"]
