@@ -11,6 +11,9 @@
 #   6. Running git pull to fast-forward with real changes
 #   7. Verifying file content integrity at each step
 #
+# This script covers small, incremental git workflows. For a realistic initial
+# push of a large source tree snapshot, use test-git-large-initial-push.sh.
+#
 # Usage:
 #   bash test-git-on-mount.sh /path/to/mount/point
 #
