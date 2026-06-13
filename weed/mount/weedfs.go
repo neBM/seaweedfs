@@ -453,6 +453,13 @@ func (wfs *WFS) lookupEntry(fullpath util.FullPath) (*filer.Entry, fuse.Status) 
 				hasDirtyHandle := false
 				if fh, fhFound := wfs.fhMap.FindFileHandle(inode); fhFound && fh.dirtyMetadata {
 					hasDirtyHandle = true
+					fh.entryLock.RLock()
+					handleEntry := fh.GetEntry().GetEntry()
+					fh.entryLock.RUnlock()
+					if handleEntry != nil {
+						glog.V(4).Infof("lookupEntry found deferred entry on open handle %s", fullpath)
+						return filer.FromPbEntry(dir, handleEntry), fuse.OK
+					}
 				}
 				wfs.pendingAsyncFlushMu.Lock()
 				_, hasPendingFlush := wfs.pendingAsyncFlush[inode]

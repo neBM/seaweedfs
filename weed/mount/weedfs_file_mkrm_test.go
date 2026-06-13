@@ -17,6 +17,7 @@ import (
 	"github.com/seaweedfs/seaweedfs/weed/util"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/proto"
 )
 
 type createEntryTestServer struct {
@@ -27,6 +28,7 @@ type createEntryTestServer struct {
 	lastUID       uint32
 	lastGID       uint32
 	lastMode      uint32
+	entries       map[string]*filer_pb.Entry
 }
 
 type createEntrySnapshot struct {
@@ -48,12 +50,33 @@ func (s *createEntryTestServer) CreateEntry(ctx context.Context, req *filer_pb.C
 			s.lastGID = req.GetEntry().GetAttributes().GetGid()
 			s.lastMode = req.GetEntry().GetAttributes().GetFileMode()
 		}
+		if s.entries == nil {
+			s.entries = make(map[string]*filer_pb.Entry)
+		}
+		s.entries[req.GetDirectory()+"/"+req.GetEntry().GetName()] = proto.Clone(req.GetEntry()).(*filer_pb.Entry)
 	}
 	return &filer_pb.CreateEntryResponse{}, nil
 }
 
 func (s *createEntryTestServer) UpdateEntry(ctx context.Context, req *filer_pb.UpdateEntryRequest) (*filer_pb.UpdateEntryResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if req.GetEntry() != nil {
+		if s.entries == nil {
+			s.entries = make(map[string]*filer_pb.Entry)
+		}
+		s.entries[req.GetDirectory()+"/"+req.GetEntry().GetName()] = proto.Clone(req.GetEntry()).(*filer_pb.Entry)
+	}
 	return &filer_pb.UpdateEntryResponse{}, nil
+}
+
+func (s *createEntryTestServer) LookupDirectoryEntry(ctx context.Context, req *filer_pb.LookupDirectoryEntryRequest) (*filer_pb.LookupDirectoryEntryResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if entry, found := s.entries[req.GetDirectory()+"/"+req.GetName()]; found {
+		return &filer_pb.LookupDirectoryEntryResponse{Entry: proto.Clone(entry).(*filer_pb.Entry)}, nil
+	}
+	return &filer_pb.LookupDirectoryEntryResponse{}, nil
 }
 
 func (s *createEntryTestServer) snapshot() createEntrySnapshot {
@@ -200,6 +223,68 @@ func TestCreateCreatesAndOpensFile(t *testing.T) {
 	}
 	if snapshot.mode != 0o640 {
 		t.Fatalf("CreateEntry mode = %o, want %o", snapshot.mode, 0o640)
+	}
+}
+
+func TestDeferredCreateRemainsVisibleAfterDirectorySwitchesToReadThrough(t *testing.T) {
+	wfs, _ := newCreateTestWFS(t)
+
+	mkdirOut := &fuse.EntryOut{}
+	if status := wfs.Mkdir(make(chan struct{}), &fuse.MkdirIn{
+		InHeader: fuse.InHeader{
+			NodeId: 1,
+			Caller: fuse.Caller{
+				Owner: fuse.Owner{
+					Uid: 123,
+					Gid: 456,
+				},
+			},
+		},
+		Mode: 0o755,
+	}, "pack", mkdirOut); status != fuse.OK {
+		t.Fatalf("Mkdir status = %v, want OK", status)
+	}
+
+	createOut := &fuse.CreateOut{}
+	if status := wfs.Create(make(chan struct{}), &fuse.CreateIn{
+		InHeader: fuse.InHeader{
+			NodeId: mkdirOut.NodeId,
+			Caller: fuse.Caller{
+				Owner: fuse.Owner{
+					Uid: 123,
+					Gid: 456,
+				},
+			},
+		},
+		Flags: syscall.O_WRONLY | syscall.O_CREAT,
+		Mode:  0o640,
+	}, "tmp_pack", createOut); status != fuse.OK {
+		t.Fatalf("Create status = %v, want OK", status)
+	}
+
+	fileHandle := wfs.GetHandle(FileHandleId(createOut.Fh))
+	if fileHandle == nil {
+		t.Fatal("Create did not register an open file handle")
+	}
+	if !fileHandle.dirtyMetadata {
+		t.Fatal("Create should leave the deferred entry dirty before flush")
+	}
+
+	fullPath := util.FullPath("/pack/tmp_pack")
+	if entry, status := wfs.maybeLoadEntry(fullPath); status != fuse.OK {
+		t.Fatalf("maybeLoadEntry before hot invalidation status = %v, want OK", status)
+	} else if entry.GetName() != "tmp_pack" {
+		t.Fatalf("maybeLoadEntry before hot invalidation name = %q, want tmp_pack", entry.GetName())
+	}
+
+	wfs.markDirectoryReadThrough(util.FullPath("/pack"))
+
+	entry, status := wfs.maybeLoadEntry(fullPath)
+	if status != fuse.OK {
+		t.Fatalf("maybeLoadEntry after hot invalidation status = %v, want OK", status)
+	}
+	if entry.GetName() != "tmp_pack" {
+		t.Fatalf("maybeLoadEntry after hot invalidation name = %q, want tmp_pack", entry.GetName())
 	}
 }
 
