@@ -54,6 +54,7 @@ func testGitCloneAndPull(t *testing.T, mountPoint, localDir string) {
 	gitRun(t, "", "clone", bareRepo, localClone)
 	gitRun(t, localClone, "config", "user.email", "test@seaweedfs.test")
 	gitRun(t, localClone, "config", "user.name", "Test")
+	gitRun(t, localClone, "config", "commit.gpgsign", "false")
 
 	// Commit 1
 	writeFile(t, localClone, "README.md", "hello world\n")
