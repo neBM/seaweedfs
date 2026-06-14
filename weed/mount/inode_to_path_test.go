@@ -133,3 +133,29 @@ func TestMarkChildrenCachedClearsReadThroughMode(t *testing.T) {
 		t.Fatal("directory should leave read-through mode after caching")
 	}
 }
+
+func TestMarkDirectoryRefreshedKeepsReadThroughWithoutCache(t *testing.T) {
+	root := util.FullPath("/")
+	dir := util.FullPath("/data")
+
+	inodeToPath := NewInodeToPath(root, 60)
+	inodeToPath.Lookup(dir, time.Now().Unix(), true, false, 0, true)
+	inodeToPath.MarkChildrenCached(dir)
+
+	now := time.Now()
+	if !inodeToPath.RecordDirectoryUpdate(dir, now, time.Second, 1) {
+		t.Fatal("expected directory to switch to read-through mode")
+	}
+	if inodeToPath.IsChildrenCached(dir) {
+		t.Fatal("directory should not be cached after switching to read-through mode")
+	}
+
+	inodeToPath.MarkDirectoryRefreshed(dir, now.Add(100*time.Millisecond))
+
+	if !inodeToPath.ShouldReadDirectoryDirect(dir) {
+		t.Fatal("directory should stay in read-through mode until the cache is repopulated")
+	}
+	if inodeToPath.IsChildrenCached(dir) {
+		t.Fatal("directory should not be marked cached without a rebuild")
+	}
+}

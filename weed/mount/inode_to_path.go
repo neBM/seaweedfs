@@ -392,13 +392,24 @@ func (i *InodeToPath) MarkDirectoryRefreshed(fullpath util.FullPath, now time.Ti
 	if !found || !entry.isDirectory {
 		return
 	}
+	wasDirect := entry.readDirDirect
 	entry.lastRefresh = now
 	entry.lastAccess = now
-	entry.readDirDirect = false
 	entry.updateCount = 0
 	entry.updateWindowStart = time.Time{}
-	if i.cacheMetaTtlSec > 0 {
-		entry.cachedExpiresTime = now.Add(i.cacheMetaTtlSec)
+	if entry.isChildrenCached {
+		entry.readDirDirect = false
+		if i.cacheMetaTtlSec > 0 {
+			entry.cachedExpiresTime = now.Add(i.cacheMetaTtlSec)
+		}
+		return
+	}
+
+	if wasDirect {
+		// A direct read does not rebuild the local directory cache, so keep the
+		// directory in read-through mode until a later cache build completes.
+		entry.readDirDirect = true
+		entry.cachedExpiresTime = time.Time{}
 	}
 }
 
