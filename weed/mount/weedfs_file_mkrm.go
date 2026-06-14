@@ -166,6 +166,13 @@ func (wfs *WFS) Mknod(cancel <-chan struct{}, in *fuse.MknodIn, name string, out
 
 /** Remove a file */
 func (wfs *WFS) Unlink(cancel <-chan struct{}, header *fuse.InHeader, name string) (code fuse.Status) {
+	startedAt := time.Now()
+	var targetLoadDur time.Duration
+	var dirLoadDur time.Duration
+	var pendingFlushWaitDur time.Duration
+	var deleteRPCDur time.Duration
+	var applyLocalDur time.Duration
+	var touchLocalDur time.Duration
 
 	dirFullPath, code := wfs.inodeToPath.GetPath(header.NodeId)
 	if code != fuse.OK {
@@ -176,7 +183,9 @@ func (wfs *WFS) Unlink(cancel <-chan struct{}, header *fuse.InHeader, name strin
 	}
 	entryFullPath := dirFullPath.Child(name)
 
+	loadStartedAt := time.Now()
 	entry, code := wfs.maybeLoadEntry(entryFullPath)
+	targetLoadDur = time.Since(loadStartedAt)
 	if code != fuse.OK {
 		if code == fuse.ENOENT {
 			return fuse.OK
@@ -189,7 +198,9 @@ func (wfs *WFS) Unlink(cancel <-chan struct{}, header *fuse.InHeader, name strin
 	}
 
 	// POSIX: enforce sticky bit on the parent directory.
+	loadStartedAt = time.Now()
 	if dirEntry, dirCode := wfs.maybeLoadEntry(dirFullPath); dirCode == fuse.OK && dirEntry != nil && dirEntry.Attributes != nil {
+		dirLoadDur = time.Since(loadStartedAt)
 		targetUid := uint32(0)
 		if entry != nil && entry.Attributes != nil {
 			targetUid = entry.Attributes.Uid
@@ -197,6 +208,8 @@ func (wfs *WFS) Unlink(cancel <-chan struct{}, header *fuse.InHeader, name strin
 		if code := checkStickyBit(dirEntry.Attributes.FileMode, dirEntry.Attributes.Uid, targetUid, header.Uid); code != fuse.OK {
 			return code
 		}
+	} else {
+		dirLoadDur = time.Since(loadStartedAt)
 	}
 
 	// Before deleting from the filer, mark any draining async-flush handle
@@ -206,6 +219,7 @@ func (wfs *WFS) Unlink(cancel <-chan struct{}, header *fuse.InHeader, name strin
 	// before Unlink sets the flag).  By waiting here, any in-flight flush
 	// finishes first; even if it recreated the entry, the filer delete below
 	// will remove it again.
+	waitStartedAt := time.Now()
 	if inode, found := wfs.inodeToPath.GetInode(entryFullPath); found {
 		if fh, fhFound := wfs.fhMap.FindFileHandle(inode); fhFound {
 			fh.isDeleted = true
@@ -218,6 +232,7 @@ func (wfs *WFS) Unlink(cancel <-chan struct{}, header *fuse.InHeader, name strin
 		}
 		wfs.waitForPendingAsyncFlush(inodeFromEntry)
 	}
+	pendingFlushWaitDur = time.Since(waitStartedAt)
 
 	// first, ensure the filer store can correctly delete
 	glog.V(3).Infof("remove file: %v", entryFullPath)
@@ -229,7 +244,9 @@ func (wfs *WFS) Unlink(cancel <-chan struct{}, header *fuse.InHeader, name strin
 		IsDeleteData: true,
 		Signatures:   []int32{wfs.signature},
 	}
+	deleteStartedAt := time.Now()
 	resp, err := wfs.streamDeleteEntry(context.Background(), deleteReq)
+	deleteRPCDur = time.Since(deleteStartedAt)
 	if err != nil {
 		glog.V(0).Infof("remove %s: %v", entryFullPath, err)
 		return fuse.OK
@@ -241,13 +258,23 @@ func (wfs *WFS) Unlink(cancel <-chan struct{}, header *fuse.InHeader, name strin
 	} else {
 		event = metadataDeleteEvent(string(dirFullPath), name, false)
 	}
+	applyStartedAt := time.Now()
 	if applyErr := wfs.applyLocalMetadataEvent(context.Background(), event); applyErr != nil {
 		glog.Warningf("unlink %s: best-effort metadata apply failed: %v", entryFullPath, applyErr)
 		wfs.inodeToPath.InvalidateChildrenCacheWithReason(dirFullPath, "unlink_metadata_apply_failed")
 	}
+	applyLocalDur = time.Since(applyStartedAt)
+	touchStartedAt := time.Now()
 	wfs.touchDirAfterMutationLocal(dirFullPath)
+	touchLocalDur = time.Since(touchStartedAt)
 
 	wfs.inodeToPath.RemovePath(entryFullPath)
+
+	totalDur := time.Since(startedAt)
+	if totalDur >= 50*time.Millisecond {
+		glog.Infof("SLOWUNLINK path=%s total=%s target_load=%s dir_load=%s pending_flush_wait=%s delete_rpc=%s apply_local=%s touch_local=%s uid=%d gid=%d",
+			entryFullPath, totalDur, targetLoadDur, dirLoadDur, pendingFlushWaitDur, deleteRPCDur, applyLocalDur, touchLocalDur, header.Uid, header.Gid)
+	}
 
 	return fuse.OK
 
