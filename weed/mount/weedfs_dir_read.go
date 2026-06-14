@@ -29,11 +29,15 @@ type DirectoryHandle struct {
 	entryStream       []*filer.Entry
 	entryStreamOffset uint64
 	snapshotTsNs      int64 // snapshot timestamp for consistent readdir in direct mode
+	refreshBuildOwned bool
+	refreshBuildDir   util.FullPath
 }
 
 func (dh *DirectoryHandle) reset() {
 	dh.isFinished = false
 	dh.snapshotTsNs = 0
+	dh.refreshBuildOwned = false
+	dh.refreshBuildDir = ""
 	// Nil out pointers to allow garbage collection of old entries,
 	// then reuse the slice's capacity to avoid re-allocations.
 	for i := range dh.entryStream {
@@ -114,6 +118,11 @@ func (wfs *WFS) OpenDir(cancel <-chan struct{}, input *fuse.OpenIn, out *fuse.Op
  * path parameter will be NULL.
  */
 func (wfs *WFS) ReleaseDir(input *fuse.ReleaseIn) {
+	if dh := wfs.getExistingDirectoryHandle(DirectoryHandleId(input.Fh)); dh != nil {
+		dh.Lock()
+		wfs.abortDirectoryDirectCacheRefresh(dh)
+		dh.Unlock()
+	}
 	wfs.ReleaseDirectoryHandle(DirectoryHandleId(input.Fh))
 }
 
@@ -161,6 +170,7 @@ func (wfs *WFS) doReadDirectory(input *fuse.ReadIn, out *fuse.DirEntryList, isPl
 	defer dh.Unlock()
 
 	if input.Offset == 0 {
+		wfs.abortDirectoryDirectCacheRefresh(dh)
 		dh.reset()
 	} else if dh.isFinished && input.Offset >= dh.entryStreamOffset {
 		entryCurrentIndex := input.Offset - dh.entryStreamOffset
@@ -304,12 +314,18 @@ func (wfs *WFS) doReadDirectory(input *fuse.ReadIn, out *fuse.DirEntryList, isPl
 
 func (wfs *WFS) readDirectoryDirect(input *fuse.ReadIn, out *fuse.DirEntryList, dh *DirectoryHandle, dirPath util.FullPath, processEachEntryFn func(entry *filer.Entry, index int64) bool) fuse.Status {
 	var lastEntryName string
+	freshRead := len(dh.entryStream) == 0 && input.Offset == dh.entryStreamOffset && dh.entryStreamOffset == directoryStreamBaseOffset
+
+	if freshRead {
+		wfs.beginDirectoryDirectCacheRefresh(dirPath, dh)
+	}
 
 	if input.Offset >= dh.entryStreamOffset {
 		if len(dh.entryStream) == 0 && input.Offset > dh.entryStreamOffset {
 			skipCount := uint32(input.Offset-dh.entryStreamOffset) + batchSize
 			entries, snapshotTs, err := loadDirectoryEntriesDirect(context.Background(), wfs, wfs.option.UidGidMapper, dirPath, "", false, skipCount, dh.snapshotTsNs, wfs.option.IncludeSystemEntries)
 			if err != nil {
+				wfs.abortDirectoryDirectCacheRefresh(dh)
 				glog.Errorf("list filer directory: %v", err)
 				return fuse.EIO
 			}
@@ -339,6 +355,7 @@ func (wfs *WFS) readDirectoryDirect(input *fuse.ReadIn, out *fuse.DirEntryList, 
 
 		entries, snapshotTs, err := loadDirectoryEntriesDirect(context.Background(), wfs, wfs.option.UidGidMapper, dirPath, lastEntryName, false, batchSize, dh.snapshotTsNs, wfs.option.IncludeSystemEntries)
 		if err != nil {
+			wfs.abortDirectoryDirectCacheRefresh(dh)
 			glog.Errorf("list filer directory: %v", err)
 			return fuse.EIO
 		}
@@ -357,13 +374,98 @@ func (wfs *WFS) readDirectoryDirect(input *fuse.ReadIn, out *fuse.DirEntryList, 
 		}
 		if !bufferFull && len(entries) < int(batchSize) {
 			dh.isFinished = true
-			// After a full successful read-through listing, exit direct mode
-			// so subsequent reads can use the cache instead of hitting the filer.
-			wfs.inodeToPath.MarkDirectoryRefreshed(dirPath, time.Now())
+			if err := wfs.completeDirectoryDirectCacheRefresh(dirPath, dh); err != nil {
+				glog.Errorf("promote directory cache %s: %v", dirPath, err)
+				wfs.abortDirectoryDirectCacheRefresh(dh)
+			} else {
+				// After a full successful read-through listing, exit direct mode
+				// so subsequent reads can use the cache instead of hitting the filer.
+				wfs.inodeToPath.MarkDirectoryRefreshed(dirPath, time.Now())
+			}
 		}
 	}
 
 	return fuse.OK
+}
+
+func (wfs *WFS) getExistingDirectoryHandle(dhid DirectoryHandleId) *DirectoryHandle {
+	wfs.dhMap.Lock()
+	defer wfs.dhMap.Unlock()
+	return wfs.dhMap.dir2inode[dhid]
+}
+
+func (wfs *WFS) beginDirectoryDirectCacheRefresh(dirPath util.FullPath, dh *DirectoryHandle) {
+	if dh.refreshBuildOwned || wfs.metaCache == nil {
+		return
+	}
+
+	wfs.refreshMu.Lock()
+	if _, refreshing := wfs.refreshingDirs[dirPath]; refreshing {
+		wfs.refreshMu.Unlock()
+		return
+	}
+	wfs.refreshingDirs[dirPath] = struct{}{}
+	wfs.refreshMu.Unlock()
+
+	if err := wfs.metaCache.BeginDirectoryBuild(context.Background(), dirPath); err != nil {
+		wfs.refreshMu.Lock()
+		delete(wfs.refreshingDirs, dirPath)
+		wfs.refreshMu.Unlock()
+		glog.V(2).Infof("begin direct directory build %s: %v", dirPath, err)
+		return
+	}
+
+	dh.refreshBuildOwned = true
+	dh.refreshBuildDir = dirPath
+}
+
+func (wfs *WFS) completeDirectoryDirectCacheRefresh(dirPath util.FullPath, dh *DirectoryHandle) error {
+	if !dh.refreshBuildOwned || dh.refreshBuildDir != dirPath || wfs.metaCache == nil {
+		return nil
+	}
+
+	defer wfs.finishDirectoryDirectCacheRefresh(dh)
+
+	if err := wfs.metaCache.DeleteFolderChildren(context.Background(), dirPath); err != nil {
+		_ = wfs.metaCache.AbortDirectoryBuild(context.Background(), dirPath)
+		return err
+	}
+	if len(dh.entryStream) > 0 {
+		if err := wfs.metaCache.BatchInsertEntries(context.Background(), dh.entryStream); err != nil {
+			_ = wfs.metaCache.AbortDirectoryBuild(context.Background(), dirPath)
+			return err
+		}
+	}
+	if err := wfs.metaCache.CompleteDirectoryBuild(context.Background(), dirPath, dh.snapshotTsNs); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (wfs *WFS) abortDirectoryDirectCacheRefresh(dh *DirectoryHandle) {
+	if !dh.refreshBuildOwned || wfs.metaCache == nil {
+		return
+	}
+
+	dirPath := dh.refreshBuildDir
+	if err := wfs.metaCache.AbortDirectoryBuild(context.Background(), dirPath); err != nil {
+		glog.V(2).Infof("abort direct directory build %s: %v", dirPath, err)
+	}
+	wfs.finishDirectoryDirectCacheRefresh(dh)
+}
+
+func (wfs *WFS) finishDirectoryDirectCacheRefresh(dh *DirectoryHandle) {
+	if !dh.refreshBuildOwned {
+		return
+	}
+
+	dirPath := dh.refreshBuildDir
+	wfs.refreshMu.Lock()
+	delete(wfs.refreshingDirs, dirPath)
+	wfs.refreshMu.Unlock()
+
+	dh.refreshBuildOwned = false
+	dh.refreshBuildDir = ""
 }
 
 func loadDirectoryEntriesDirect(ctx context.Context, client filer_pb.FilerClient, uidGidMapper *meta_cache.UidGidMapper, dirPath util.FullPath, startFileName string, includeStart bool, limit uint32, snapshotTsNs int64, includeSystemEntries bool) ([]*filer.Entry, int64, error) {

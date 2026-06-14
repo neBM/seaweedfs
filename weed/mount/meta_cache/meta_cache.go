@@ -143,6 +143,12 @@ func (mc *MetaCache) doBatchInsertEntries(ctx context.Context, entries []*filer.
 	return mc.leveldbStore.BatchInsertEntries(ctx, entries)
 }
 
+func (mc *MetaCache) BatchInsertEntries(ctx context.Context, entries []*filer.Entry) error {
+	mc.Lock()
+	defer mc.Unlock()
+	return mc.doBatchInsertEntries(ctx, entries)
+}
+
 func (mc *MetaCache) AtomicUpdateEntryFromFiler(ctx context.Context, oldPath util.FullPath, newEntry *filer.Entry) error {
 	mc.Lock()
 	defer mc.Unlock()
