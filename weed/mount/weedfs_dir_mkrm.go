@@ -74,7 +74,7 @@ func (wfs *WFS) Mkdir(cancel <-chan struct{}, in *fuse.MkdirIn, name string, out
 		}
 		if applyErr := wfs.applyLocalMetadataEvent(context.Background(), event); applyErr != nil {
 			glog.Warningf("mkdir %s: best-effort metadata apply failed: %v", entryFullPath, applyErr)
-			wfs.inodeToPath.InvalidateChildrenCache(dirFullPath)
+			wfs.inodeToPath.InvalidateChildrenCacheWithReason(dirFullPath, "mkdir_metadata_apply_failed")
 		}
 		wfs.touchDirAfterMutationLocal(dirFullPath)
 		wfs.inodeToPath.AdjustSubdirCount(dirFullPath, 1)
@@ -155,7 +155,7 @@ func (wfs *WFS) Rmdir(cancel <-chan struct{}, header *fuse.InHeader, name string
 	}
 	if applyErr := wfs.applyLocalMetadataEvent(context.Background(), event); applyErr != nil {
 		glog.Warningf("rmdir %s: best-effort metadata apply failed: %v", entryFullPath, applyErr)
-		wfs.inodeToPath.InvalidateChildrenCache(dirFullPath)
+		wfs.inodeToPath.InvalidateChildrenCacheWithReason(dirFullPath, "rmdir_metadata_apply_failed")
 	}
 	wfs.inodeToPath.RemovePath(entryFullPath)
 	wfs.touchDirAfterMutationLocal(dirFullPath)

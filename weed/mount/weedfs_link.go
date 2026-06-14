@@ -104,7 +104,7 @@ func (wfs *WFS) Link(cancel <-chan struct{}, in *fuse.LinkIn, name string, out *
 		}
 		if applyErr := wfs.applyLocalMetadataEvent(ctx, updateEvent); applyErr != nil {
 			glog.Warningf("link %s: best-effort metadata apply failed: %v", oldEntryPath, applyErr)
-			wfs.inodeToPath.InvalidateChildrenCache(util.FullPath(oldParentPath))
+			wfs.inodeToPath.InvalidateChildrenCacheWithReason(util.FullPath(oldParentPath), "link_source_metadata_apply_failed")
 		}
 	}
 	if err == nil {
@@ -129,7 +129,7 @@ func (wfs *WFS) Link(cancel <-chan struct{}, in *fuse.LinkIn, name string, out *
 			}
 			if applyErr := wfs.applyLocalMetadataEvent(ctx, createEvent); applyErr != nil {
 				glog.Warningf("link %s: best-effort metadata apply failed: %v", newParentPath.Child(name), applyErr)
-				wfs.inodeToPath.InvalidateChildrenCache(newParentPath)
+				wfs.inodeToPath.InvalidateChildrenCacheWithReason(newParentPath, "link_target_metadata_apply_failed")
 			}
 			wfs.touchDirAfterMutationLocal(newParentPath)
 		}

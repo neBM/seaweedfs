@@ -162,7 +162,7 @@ func (wfs *WFS) flushFileMetadata(fh *FileHandle) error {
 	}
 	if applyErr := wfs.applyLocalMetadataEvent(context.Background(), event); applyErr != nil {
 		glog.Warningf("flushFileMetadata %s: best-effort metadata apply failed: %v", fileFullPath, applyErr)
-		wfs.inodeToPath.InvalidateChildrenCache(util.FullPath(dir))
+		wfs.inodeToPath.InvalidateChildrenCacheWithReason(util.FullPath(dir), "metadata_flush_apply_failed")
 	}
 
 	glog.V(3).Infof("flushed metadata for %s with %d chunks", fileFullPath, len(entry.GetChunks()))

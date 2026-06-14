@@ -188,6 +188,8 @@ func (i *InodeToPath) MarkChildrenCached(fullpath util.FullPath) {
 		glog.Warningf("MarkChildrenCached inode %d not found in inode2path for %v", inode, fullpath)
 		return
 	}
+	wasCached := path.isChildrenCached
+	wasDirect := path.readDirDirect
 	path.isChildrenCached = true
 	path.readDirDirect = false
 	now := time.Now()
@@ -197,6 +199,9 @@ func (i *InodeToPath) MarkChildrenCached(fullpath util.FullPath) {
 	path.updateWindowStart = time.Time{}
 	if i.cacheMetaTtlSec > 0 {
 		path.cachedExpiresTime = now.Add(i.cacheMetaTtlSec)
+	}
+	if !wasCached || wasDirect {
+		glog.V(2).Infof("dir cache state %s reason=mark_children_cached cached=true direct=false", fullpath)
 	}
 }
 
@@ -238,6 +243,10 @@ func (i *InodeToPath) InvalidateAllChildrenCache() {
 }
 
 func (i *InodeToPath) InvalidateChildrenCache(fullpath util.FullPath) {
+	i.InvalidateChildrenCacheWithReason(fullpath, "unspecified")
+}
+
+func (i *InodeToPath) InvalidateChildrenCacheWithReason(fullpath util.FullPath, reason string) {
 	i.Lock()
 	defer i.Unlock()
 	inode, found := i.path2inode[fullpath]
@@ -247,6 +256,9 @@ func (i *InodeToPath) InvalidateChildrenCache(fullpath util.FullPath) {
 	entry, found := i.inode2path[inode]
 	if !found {
 		return
+	}
+	if entry.isChildrenCached || entry.readDirDirect {
+		glog.V(2).Infof("dir cache invalidated %s reason=%s cached=%v direct=%v", fullpath, reason, entry.isChildrenCached, entry.readDirDirect)
 	}
 	entry.resetCacheState()
 }
@@ -332,6 +344,7 @@ func (i *InodeToPath) MarkDirectoryReadThrough(fullpath util.FullPath, now time.
 	entry.lastRefresh = time.Time{}
 	entry.updateCount = 0
 	entry.updateWindowStart = time.Time{}
+	glog.V(2).Infof("dir cache state %s reason=explicit_read_through cached=false direct=true", fullpath)
 	return true
 }
 
@@ -362,6 +375,7 @@ func (i *InodeToPath) RecordDirectoryUpdate(fullpath util.FullPath, now time.Tim
 		entry.lastRefresh = time.Time{}
 		entry.updateCount = 0
 		entry.updateWindowStart = time.Time{}
+		glog.V(2).Infof("dir cache state %s reason=hot_updates cached=false direct=true threshold=%d window=%s", fullpath, threshold, window)
 		return true
 	}
 	return false
@@ -402,6 +416,7 @@ func (i *InodeToPath) MarkDirectoryRefreshed(fullpath util.FullPath, now time.Ti
 		if i.cacheMetaTtlSec > 0 {
 			entry.cachedExpiresTime = now.Add(i.cacheMetaTtlSec)
 		}
+		glog.V(2).Infof("dir cache state %s reason=direct_read_refresh_complete cached=true direct=false", fullpath)
 		return
 	}
 
@@ -410,6 +425,7 @@ func (i *InodeToPath) MarkDirectoryRefreshed(fullpath util.FullPath, now time.Ti
 		// directory in read-through mode until a later cache build completes.
 		entry.readDirDirect = true
 		entry.cachedExpiresTime = time.Time{}
+		glog.V(2).Infof("dir cache state %s reason=direct_read_refresh_without_cache cached=false direct=true", fullpath)
 	}
 }
 

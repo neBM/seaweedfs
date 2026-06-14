@@ -343,9 +343,9 @@ func (wfs *WFS) handleRenameResponse(ctx context.Context, resp *filer_pb.StreamR
 	if resp.EventNotification.NewEntry != nil {
 		if err := wfs.applyLocalMetadataEvent(ctx, metadataEventFromRenameResponse(resp)); err != nil {
 			glog.Warningf("rename apply metadata event: %v", err)
-			wfs.inodeToPath.InvalidateChildrenCache(util.FullPath(resp.Directory))
+			wfs.inodeToPath.InvalidateChildrenCacheWithReason(util.FullPath(resp.Directory), "rename_create_fragment_apply_failed")
 			if resp.EventNotification.NewParentPath != "" {
-				wfs.inodeToPath.InvalidateChildrenCache(util.FullPath(resp.EventNotification.NewParentPath))
+				wfs.inodeToPath.InvalidateChildrenCacheWithReason(util.FullPath(resp.EventNotification.NewParentPath), "rename_create_fragment_apply_failed")
 			}
 		}
 
@@ -395,7 +395,7 @@ func (wfs *WFS) handleRenameResponse(ctx context.Context, resp *filer_pb.StreamR
 		// without new entry, only old entry name exists. This is the second step to delete old entry
 		if err := wfs.applyLocalMetadataEvent(ctx, metadataEventFromRenameResponse(resp)); err != nil {
 			glog.Warningf("rename apply delete event: %v", err)
-			wfs.inodeToPath.InvalidateChildrenCache(util.FullPath(resp.Directory))
+			wfs.inodeToPath.InvalidateChildrenCacheWithReason(util.FullPath(resp.Directory), "rename_delete_fragment_apply_failed")
 		}
 	}
 
