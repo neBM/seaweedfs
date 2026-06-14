@@ -261,7 +261,7 @@ func (wfs *WFS) Unlink(cancel <-chan struct{}, header *fuse.InHeader, name strin
 	applyStartedAt := time.Now()
 	if applyErr := wfs.applyLocalMetadataEvent(context.Background(), event); applyErr != nil {
 		glog.Warningf("unlink %s: best-effort metadata apply failed: %v", entryFullPath, applyErr)
-		wfs.inodeToPath.InvalidateChildrenCacheWithReason(dirFullPath, "unlink_metadata_apply_failed")
+		wfs.invalidateDirectoryCacheWithReason(dirFullPath, "unlink_metadata_apply_failed")
 	}
 	applyLocalDur = time.Since(applyStartedAt)
 	touchStartedAt := time.Now()
@@ -377,7 +377,7 @@ func (wfs *WFS) createRegularFile(dirFullPath util.FullPath, name string, mode u
 		}
 		if applyErr := wfs.applyLocalMetadataEvent(context.Background(), event); applyErr != nil {
 			glog.Warningf("createFile %s: best-effort metadata apply failed: %v", entryFullPath, applyErr)
-			wfs.inodeToPath.InvalidateChildrenCacheWithReason(dirFullPath, "create_metadata_apply_failed")
+			wfs.invalidateDirectoryCacheWithReason(dirFullPath, "create_metadata_apply_failed")
 		}
 		wfs.touchDirAfterMutationLocal(dirFullPath)
 	}
@@ -421,7 +421,7 @@ func (wfs *WFS) asyncCreateEntry(dirFullPath util.FullPath, entry *filer_pb.Entr
 			}
 			if applyErr := wfs.applyLocalMetadataEvent(context.Background(), event); applyErr != nil {
 				glog.Warningf("async createFile %s: metadata apply: %v", entryPath, applyErr)
-				wfs.inodeToPath.InvalidateChildrenCacheWithReason(dirFullPath, "async_create_metadata_apply_failed")
+				wfs.invalidateDirectoryCacheWithReason(dirFullPath, "async_create_metadata_apply_failed")
 			}
 			return nil
 		}, func(nextAttempt, totalAttempts int, backoff time.Duration, err error) {
@@ -431,7 +431,7 @@ func (wfs *WFS) asyncCreateEntry(dirFullPath util.FullPath, entry *filer_pb.Entr
 		if err != nil {
 			glog.Errorf("async createFile %s: failed after retries: %v — removing local entry", entryPath, err)
 			wfs.metaCache.DeleteEntry(context.Background(), entryPath)
-			wfs.inodeToPath.InvalidateChildrenCacheWithReason(dirFullPath, "async_create_failed")
+			wfs.invalidateDirectoryCacheWithReason(dirFullPath, "async_create_failed")
 		}
 	}()
 }

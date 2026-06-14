@@ -5,12 +5,14 @@ import (
 	"io"
 	"net"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/seaweedfs/go-fuse/v2/fuse"
+	"github.com/seaweedfs/seaweedfs/weed/filer"
 	"github.com/seaweedfs/seaweedfs/weed/mount/meta_cache"
 	"github.com/seaweedfs/seaweedfs/weed/pb"
 	"github.com/seaweedfs/seaweedfs/weed/pb/filer_pb"
@@ -167,13 +169,16 @@ func newDirectoryReadTestWFS(t *testing.T, serverEntries map[string][]*filer_pb.
 	}
 
 	wfs := &WFS{
-		option:         option,
-		signature:      1,
-		inodeToPath:    NewInodeToPath(root, 0),
-		fhMap:          NewFileHandleToInode(),
-		dhMap:          NewDirectoryHandleToInode(),
-		fhLockTable:    util.NewLockTable[FileHandleId](),
-		refreshingDirs: make(map[util.FullPath]struct{}),
+		option:          option,
+		signature:       1,
+		inodeToPath:     NewInodeToPath(root, 0),
+		fhMap:           NewFileHandleToInode(),
+		dhMap:           NewDirectoryHandleToInode(),
+		fhLockTable:     util.NewLockTable[FileHandleId](),
+		refreshingDirs:  make(map[util.FullPath]struct{}),
+		dirHotWindow:    defaultDirHotWindow,
+		dirHotThreshold: defaultDirHotThreshold,
+		dirIdleEvict:    defaultDirIdleEvict,
 	}
 	wfs.metaCache = meta_cache.NewMetaCache(
 		filepath.Join(t.TempDir(), "meta"),
@@ -187,7 +192,12 @@ func newDirectoryReadTestWFS(t *testing.T, serverEntries map[string][]*filer_pb.
 			return wfs.inodeToPath.IsChildrenCached(path)
 		},
 		func(util.FullPath, *filer_pb.Entry) {},
-		nil,
+		func(dirPath util.FullPath) {
+			wfs.clearHotDirectoryListing(dirPath)
+			if wfs.inodeToPath.RecordDirectoryUpdate(dirPath, time.Now(), wfs.dirHotWindow, wfs.dirHotThreshold) {
+				wfs.markDirectoryReadThrough(dirPath)
+			}
+		},
 	)
 	wfs.inodeToPath.MarkChildrenCached(root)
 	t.Cleanup(func() {
@@ -195,6 +205,40 @@ func newDirectoryReadTestWFS(t *testing.T, serverEntries map[string][]*filer_pb.
 	})
 
 	return wfs, testServer
+}
+
+func directoryHandleEntryNames(dh *DirectoryHandle) []string {
+	names := make([]string, 0, len(dh.entryStream))
+	for _, entry := range dh.entryStream {
+		names = append(names, entry.Name())
+	}
+	return names
+}
+
+func readDirectoryHandleToEOF(t *testing.T, wfs *WFS, dirInode uint64, handle DirectoryHandleId) *DirectoryHandle {
+	t.Helper()
+
+	dh := wfs.GetDirectoryHandle(handle)
+	offset := uint64(0)
+	for attempt := 0; attempt < 32; attempt++ {
+		out := fuse.NewDirEntryList(make([]byte, 256), offset)
+		if status := wfs.ReadDir(make(chan struct{}), &fuse.ReadIn{
+			InHeader: fuse.InHeader{NodeId: dirInode},
+			Fh:       uint64(handle),
+			Offset:   offset,
+		}, out); status != fuse.OK {
+			t.Fatalf("ReadDir status = %v, want OK", status)
+		}
+		if out.Offset == offset {
+			if dh.isFinished {
+				return dh
+			}
+			t.Fatalf("ReadDir made no progress before EOF on handle %d", handle)
+		}
+		offset = out.Offset
+	}
+	t.Fatalf("ReadDir did not reach EOF for handle %d", handle)
+	return nil
 }
 
 func TestLoadDirectoryEntriesDirectFiltersHiddenEntriesAndMapsIds(t *testing.T) {
@@ -275,6 +319,11 @@ func TestReadDirFullDirectReadPromotesDirectoryBackToCache(t *testing.T) {
 
 	dirPath := util.FullPath("/dir")
 	dirInode := wfs.inodeToPath.Lookup(dirPath, time.Now().Unix(), true, false, 0, false)
+	listCalls := 0
+	wfs.listDirectoryEntriesFn = func(ctx context.Context, dirPath util.FullPath, startFileName string, includeStartFile bool, limit int64, eachEntryFunc filer.ListEachEntryFunc) error {
+		listCalls++
+		return wfs.metaCache.ListDirectoryEntries(ctx, dirPath, startFileName, includeStartFile, limit, eachEntryFunc)
+	}
 	wfs.inodeToPath.MarkChildrenCached(dirPath)
 	if !wfs.inodeToPath.MarkDirectoryReadThrough(dirPath, time.Now()) {
 		t.Fatal("failed to switch directory to direct-read mode")
@@ -326,6 +375,9 @@ func TestReadDirFullDirectReadPromotesDirectoryBackToCache(t *testing.T) {
 	if got := testServer.listCallsForDir("/dir"); got != firstCalls {
 		t.Fatalf("second read triggered %d filer list calls, want %d total", got, firstCalls)
 	}
+	if listCalls != 0 {
+		t.Fatalf("second read triggered %d meta-cache list calls, want 0", listCalls)
+	}
 }
 
 func TestReleaseDirAbortsIncompleteDirectReadRefresh(t *testing.T) {
@@ -367,4 +419,102 @@ func TestReleaseDirAbortsIncompleteDirectReadRefresh(t *testing.T) {
 	if wfs.inodeToPath.IsChildrenCached(dirPath) {
 		t.Fatal("directory became cached after aborting an incomplete refresh")
 	}
+}
+
+func TestCachedReadDirReusesHotListingAcrossHandles(t *testing.T) {
+	wfs, testServer := newDirectoryReadTestWFS(t, map[string][]*filer_pb.Entry{
+		"/dir": {
+			{Name: "alpha"},
+			{Name: "beta"},
+			{Name: "gamma"},
+		},
+	})
+
+	dirPath := util.FullPath("/dir")
+	dirInode := wfs.inodeToPath.Lookup(dirPath, time.Now().Unix(), true, false, 0, false)
+
+	listCalls := 0
+	wfs.listDirectoryEntriesFn = func(ctx context.Context, dirPath util.FullPath, startFileName string, includeStartFile bool, limit int64, eachEntryFunc filer.ListEachEntryFunc) error {
+		listCalls++
+		return wfs.metaCache.ListDirectoryEntries(ctx, dirPath, startFileName, includeStartFile, limit, eachEntryFunc)
+	}
+
+	firstHandle, _ := wfs.AcquireDirectoryHandle()
+	firstDH := readDirectoryHandleToEOF(t, wfs, dirInode, firstHandle)
+	if got := directoryHandleEntryNames(firstDH); !reflect.DeepEqual(got, []string{"alpha", "beta", "gamma"}) {
+		t.Fatalf("first cached entry names = %v, want [alpha beta gamma]", got)
+	}
+	if !wfs.inodeToPath.IsChildrenCached(dirPath) {
+		t.Fatal("directory should be cached after first full read")
+	}
+	if got := len(wfs.dirListingCache.entries[dirPath]); got != 3 {
+		t.Fatalf("hot directory listing size = %d, want 3", got)
+	}
+	firstCacheCalls := listCalls
+	if firstCacheCalls == 0 {
+		t.Fatal("expected first cached read to load entries from the local meta cache")
+	}
+	if got := testServer.listCallsForDir("/dir"); got == 0 {
+		t.Fatal("expected first read to visit the filer once to seed the meta cache")
+	}
+	wfs.ReleaseDir(&fuse.ReleaseIn{Fh: uint64(firstHandle)})
+
+	secondHandle, _ := wfs.AcquireDirectoryHandle()
+	secondDH := readDirectoryHandleToEOF(t, wfs, dirInode, secondHandle)
+	if got := directoryHandleEntryNames(secondDH); !reflect.DeepEqual(got, []string{"alpha", "beta", "gamma"}) {
+		t.Fatalf("second cached entry names = %v, want [alpha beta gamma]", got)
+	}
+	if listCalls != firstCacheCalls {
+		t.Fatalf("second cached read triggered %d extra meta-cache list calls, want 0", listCalls-firstCacheCalls)
+	}
+	wfs.ReleaseDir(&fuse.ReleaseIn{Fh: uint64(secondHandle)})
+}
+
+func TestCachedReadDirInvalidatesHotListingOnDirectoryUpdate(t *testing.T) {
+	wfs, _ := newDirectoryReadTestWFS(t, map[string][]*filer_pb.Entry{
+		"/dir": {
+			{Name: "alpha"},
+			{Name: "beta"},
+		},
+	})
+
+	dirPath := util.FullPath("/dir")
+	dirInode := wfs.inodeToPath.Lookup(dirPath, time.Now().Unix(), true, false, 0, false)
+
+	listCalls := 0
+	wfs.listDirectoryEntriesFn = func(ctx context.Context, dirPath util.FullPath, startFileName string, includeStartFile bool, limit int64, eachEntryFunc filer.ListEachEntryFunc) error {
+		listCalls++
+		return wfs.metaCache.ListDirectoryEntries(ctx, dirPath, startFileName, includeStartFile, limit, eachEntryFunc)
+	}
+
+	firstHandle, _ := wfs.AcquireDirectoryHandle()
+	_ = readDirectoryHandleToEOF(t, wfs, dirInode, firstHandle)
+	firstCacheCalls := listCalls
+	wfs.ReleaseDir(&fuse.ReleaseIn{Fh: uint64(firstHandle)})
+
+	now := time.Now()
+	if err := wfs.applyLocalMetadataEvent(context.Background(), metadataCreateEvent("/dir", &filer_pb.Entry{
+		Name: "gamma",
+		Attributes: &filer_pb.FuseAttributes{
+			FileMode: 0o644,
+			Crtime:   now.Unix(),
+			Ctime:    now.Unix(),
+			Mtime:    now.Unix(),
+		},
+	})); err != nil {
+		t.Fatalf("applyLocalMetadataEvent: %v", err)
+	}
+	if got := len(wfs.dirListingCache.entries[dirPath]); got != 0 {
+		t.Fatalf("hot directory listing size after update = %d, want 0", got)
+	}
+
+	secondHandle, _ := wfs.AcquireDirectoryHandle()
+	secondDH := readDirectoryHandleToEOF(t, wfs, dirInode, secondHandle)
+	if got := directoryHandleEntryNames(secondDH); !reflect.DeepEqual(got, []string{"alpha", "beta", "gamma"}) {
+		t.Fatalf("updated cached entry names = %v, want [alpha beta gamma]", got)
+	}
+	if listCalls <= firstCacheCalls {
+		t.Fatalf("directory update did not invalidate hot listing: listCalls=%d firstCacheCalls=%d", listCalls, firstCacheCalls)
+	}
+	wfs.ReleaseDir(&fuse.ReleaseIn{Fh: uint64(secondHandle)})
 }

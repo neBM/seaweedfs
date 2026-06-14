@@ -35,7 +35,7 @@ func (wfs *WFS) saveEntry(path util.FullPath, entry *filer_pb.Entry) (code fuse.
 		}
 		if applyErr := wfs.applyLocalMetadataEvent(context.Background(), event); applyErr != nil {
 			glog.Warningf("saveEntry %s: best-effort metadata apply failed: %v", path, applyErr)
-			wfs.inodeToPath.InvalidateChildrenCacheWithReason(util.FullPath(parentDir), "save_entry_metadata_apply_failed")
+			wfs.invalidateDirectoryCacheWithReason(util.FullPath(parentDir), "save_entry_metadata_apply_failed")
 		}
 	}
 	if err != nil {

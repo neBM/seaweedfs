@@ -241,7 +241,7 @@ func (wfs *WFS) flushMetadataToFiler(fh *FileHandle, dir, name string, uid, gid 
 	}
 	if applyErr := wfs.applyLocalMetadataEvent(context.Background(), event); applyErr != nil {
 		glog.Warningf("flush %s: best-effort metadata apply failed: %v", fileFullPath, applyErr)
-		wfs.inodeToPath.InvalidateChildrenCacheWithReason(util.FullPath(dir), "file_sync_metadata_apply_failed")
+		wfs.invalidateDirectoryCacheWithReason(util.FullPath(dir), "file_sync_metadata_apply_failed")
 	}
 
 	if err == nil {

@@ -114,31 +114,33 @@ type WFS struct {
 	fuse.RawFileSystem
 	mount_pb.UnimplementedSeaweedMountServer
 	fs.Inode
-	option               *Option
-	metaCache            *meta_cache.MetaCache
-	stats                statsCache
-	chunkCache           *chunk_cache.TieredChunkCache
-	signature            int32
-	concurrentWriters    *util.LimitedConcurrentExecutor
-	copyBufferPool       sync.Pool
-	concurrentCopiersSem chan struct{}
-	inodeToPath          *InodeToPath
-	fhMap                *FileHandleToInode
-	dhMap                *DirectoryHandleToInode
-	fuseServer           *fuse.Server
-	IsOverQuota          bool
-	fhLockTable          *util.LockTable[FileHandleId]
-	posixLocks           *PosixLockTable
-	rdmaClient           *RDMAMountClient
-	FilerConf            *filer.FilerConf
-	filerClient          volumeLocationClient // Cached volume location client
-	refreshMu            sync.Mutex
-	refreshingDirs       map[util.FullPath]struct{}
-	atimeMu              sync.Mutex
-	atimeMap             map[uint64]time.Time // inode -> atime, in-memory only, bounded
-	dirHotWindow         time.Duration
-	dirHotThreshold      int
-	dirIdleEvict         time.Duration
+	option                 *Option
+	metaCache              *meta_cache.MetaCache
+	stats                  statsCache
+	chunkCache             *chunk_cache.TieredChunkCache
+	signature              int32
+	concurrentWriters      *util.LimitedConcurrentExecutor
+	copyBufferPool         sync.Pool
+	concurrentCopiersSem   chan struct{}
+	inodeToPath            *InodeToPath
+	fhMap                  *FileHandleToInode
+	dhMap                  *DirectoryHandleToInode
+	fuseServer             *fuse.Server
+	IsOverQuota            bool
+	fhLockTable            *util.LockTable[FileHandleId]
+	posixLocks             *PosixLockTable
+	rdmaClient             *RDMAMountClient
+	FilerConf              *filer.FilerConf
+	filerClient            volumeLocationClient // Cached volume location client
+	refreshMu              sync.Mutex
+	refreshingDirs         map[util.FullPath]struct{}
+	atimeMu                sync.Mutex
+	atimeMap               map[uint64]time.Time // inode -> atime, in-memory only, bounded
+	dirHotWindow           time.Duration
+	dirHotThreshold        int
+	dirIdleEvict           time.Duration
+	dirListingCache        hotDirectoryListingCache
+	listDirectoryEntriesFn listDirectoryEntriesFunc
 
 	// asyncFlushWg tracks pending background flush work items for writebackCache mode.
 	// Must be waited on before unmount cleanup to prevent data loss.
@@ -263,6 +265,7 @@ func NewSeaweedFileSystem(option *Option) *WFS {
 				}
 			}
 		}, func(dirPath util.FullPath) {
+			wfs.clearHotDirectoryListing(dirPath)
 			if wfs.inodeToPath.RecordDirectoryUpdate(dirPath, time.Now(), wfs.dirHotWindow, wfs.dirHotThreshold) {
 				wfs.markDirectoryReadThrough(dirPath)
 			}
@@ -351,6 +354,7 @@ func (wfs *WFS) StartBackgroundTasks() error {
 		if deleteErr := wfs.metaCache.DeleteFolderChildren(context.Background(), util.FullPath(wfs.option.FilerMountRootPath)); deleteErr != nil {
 			glog.Warningf("meta cache cleanup failed: %v", deleteErr)
 		}
+		wfs.clearAllHotDirectoryListings()
 		wfs.inodeToPath.InvalidateAllChildrenCache()
 	}, follower)
 	go wfs.loopCheckQuota()
@@ -506,6 +510,7 @@ func (wfs *WFS) ClearCacheDir() {
 }
 
 func (wfs *WFS) markDirectoryReadThrough(dirPath util.FullPath) {
+	wfs.clearHotDirectoryListing(dirPath)
 	if !wfs.inodeToPath.MarkDirectoryReadThrough(dirPath, time.Now()) {
 		return
 	}
@@ -523,6 +528,7 @@ func (wfs *WFS) loopEvictIdleDirCache() {
 	for range ticker.C {
 		dirs := wfs.inodeToPath.CollectEvictableDirs(time.Now(), wfs.dirIdleEvict)
 		for _, dir := range dirs {
+			wfs.clearHotDirectoryListing(dir)
 			if err := wfs.metaCache.DeleteFolderChildren(context.Background(), dir); err != nil {
 				glog.V(2).Infof("evict dir cache %s: %v", dir, err)
 			}

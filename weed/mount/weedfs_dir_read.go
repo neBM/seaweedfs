@@ -230,6 +230,9 @@ func (wfs *WFS) doReadDirectory(input *fuse.ReadIn, out *fuse.DirEntryList, isPl
 		}
 		input.Offset = directoryStreamBaseOffset
 	}
+	if len(dh.entryStream) == 0 && input.Offset >= dh.entryStreamOffset {
+		wfs.seedDirectoryHandleFromHotListing(dh, dirPath)
+	}
 
 	var lastEntryName string
 
@@ -250,7 +253,7 @@ func (wfs *WFS) doReadDirectory(input *fuse.ReadIn, out *fuse.DirEntryList, isPl
 			}
 
 			// Load entries from beginning to fill cache up to the requested offset
-			loadErr := wfs.metaCache.ListDirectoryEntries(context.Background(), dirPath, "", false, skipCount+int64(batchSize), func(entry *filer.Entry) (bool, error) {
+			loadErr := wfs.listCachedDirectoryEntries(context.Background(), dirPath, "", false, skipCount+int64(batchSize), func(entry *filer.Entry) (bool, error) {
 				dh.entryStream = append(dh.entryStream, entry)
 				return true, nil
 			})
@@ -277,6 +280,9 @@ func (wfs *WFS) doReadDirectory(input *fuse.ReadIn, out *fuse.DirEntryList, isPl
 				return fuse.OK
 			}
 		}
+		if dh.isFinished {
+			return fuse.OK
+		}
 
 		// Cache exhausted, load next batch
 		if err := meta_cache.EnsureVisited(wfs.metaCache, wfs, dirPath); err != nil {
@@ -287,7 +293,7 @@ func (wfs *WFS) doReadDirectory(input *fuse.ReadIn, out *fuse.DirEntryList, isPl
 		// Batch loading: fetch batchSize entries starting from lastEntryName
 		loadedCount := 0
 		bufferFull := false
-		loadErr := wfs.metaCache.ListDirectoryEntries(context.Background(), dirPath, lastEntryName, false, int64(batchSize), func(entry *filer.Entry) (bool, error) {
+		loadErr := wfs.listCachedDirectoryEntries(context.Background(), dirPath, lastEntryName, false, int64(batchSize), func(entry *filer.Entry) (bool, error) {
 			currentIndex := int64(len(dh.entryStream))
 			dh.entryStream = append(dh.entryStream, entry)
 			loadedCount++
@@ -306,6 +312,7 @@ func (wfs *WFS) doReadDirectory(input *fuse.ReadIn, out *fuse.DirEntryList, isPl
 		// and we got fewer entries than requested
 		if !bufferFull && loadedCount < batchSize {
 			dh.isFinished = true
+			wfs.rememberHotDirectoryListing(dirPath, dh.entryStream)
 		}
 	}
 
@@ -374,6 +381,7 @@ func (wfs *WFS) readDirectoryDirect(input *fuse.ReadIn, out *fuse.DirEntryList, 
 		}
 		if !bufferFull && len(entries) < int(batchSize) {
 			dh.isFinished = true
+			wfs.rememberHotDirectoryListing(dirPath, dh.entryStream)
 			if err := wfs.completeDirectoryDirectCacheRefresh(dirPath, dh); err != nil {
 				glog.Errorf("promote directory cache %s: %v", dirPath, err)
 				wfs.abortDirectoryDirectCacheRefresh(dh)
