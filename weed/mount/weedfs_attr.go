@@ -311,6 +311,13 @@ func (wfs *WFS) touchDirMtimeCtimeLocal(dirPath util.FullPath) {
 	}
 }
 
+// touchDirAfterMutationLocal keeps the local parent directory view current
+// without issuing a second remote parent-directory metadata write.
+func (wfs *WFS) touchDirAfterMutationLocal(dirPath util.FullPath) {
+	wfs.inodeToPath.TouchDirectory(dirPath)
+	wfs.touchDirMtimeCtimeLocal(dirPath)
+}
+
 const atimeMapMaxSize = 8192
 
 // setAtime stores an in-memory atime for an inode. The map is bounded;

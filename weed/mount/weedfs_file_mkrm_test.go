@@ -33,6 +33,8 @@ type createEntryTestServer struct {
 	lastMode           uint32
 	lastCreateExpected *int64
 	lastExpected       *int64
+	createCalls        int
+	updateCalls        int
 	entries            map[string]*filer_pb.Entry
 	store              filer.FilerStore
 }
@@ -45,6 +47,8 @@ type createEntrySnapshot struct {
 	mode           uint32
 	createExpected *int64
 	expected       *int64
+	createCalls    int
+	updateCalls    int
 }
 
 func (s *createEntryTestServer) CreateEntry(ctx context.Context, req *filer_pb.CreateEntryRequest) (*filer_pb.CreateEntryResponse, error) {
@@ -52,6 +56,7 @@ func (s *createEntryTestServer) CreateEntry(ctx context.Context, req *filer_pb.C
 	defer s.mu.Unlock()
 	s.lastDirectory = req.GetDirectory()
 	s.lastCreateExpected = req.ExpectedEntryRevision
+	s.createCalls++
 	if req.GetEntry() != nil {
 		key := req.GetDirectory() + "/" + req.GetEntry().GetName()
 		s.lastName = req.GetEntry().GetName()
@@ -83,6 +88,7 @@ func (s *createEntryTestServer) UpdateEntry(ctx context.Context, req *filer_pb.U
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastExpected = req.ExpectedEntryRevision
+	s.updateCalls++
 	if req.GetEntry() != nil {
 		key := req.GetDirectory() + "/" + req.GetEntry().GetName()
 		if s.store != nil {
@@ -134,6 +140,8 @@ func (s *createEntryTestServer) snapshot() createEntrySnapshot {
 		mode:           s.lastMode,
 		createExpected: s.lastCreateExpected,
 		expected:       s.lastExpected,
+		createCalls:    s.createCalls,
+		updateCalls:    s.updateCalls,
 	}
 }
 
@@ -329,6 +337,36 @@ func TestCreateCreatesAndOpensFile(t *testing.T) {
 	}
 	if snapshot.mode != 0o640 {
 		t.Fatalf("CreateEntry mode = %o, want %o", snapshot.mode, 0o640)
+	}
+}
+
+func TestCreateDoesNotIssueParentUpdateBeforeFlush(t *testing.T) {
+	wfs, testServer := newCreateTestWFS(t)
+
+	out := &fuse.CreateOut{}
+	status := wfs.Create(make(chan struct{}), &fuse.CreateIn{
+		InHeader: fuse.InHeader{
+			NodeId: 1,
+			Caller: fuse.Caller{
+				Owner: fuse.Owner{
+					Uid: 123,
+					Gid: 456,
+				},
+			},
+		},
+		Flags: syscall.O_WRONLY | syscall.O_CREAT,
+		Mode:  0o640,
+	}, "hello.txt", out)
+	if status != fuse.OK {
+		t.Fatalf("Create status = %v, want OK", status)
+	}
+
+	snapshot := testServer.snapshot()
+	if snapshot.createCalls != 0 {
+		t.Fatalf("CreateEntry calls before flush = %d, want 0", snapshot.createCalls)
+	}
+	if snapshot.updateCalls != 0 {
+		t.Fatalf("UpdateEntry calls before flush = %d, want 0", snapshot.updateCalls)
 	}
 }
 
@@ -703,5 +741,33 @@ func TestCreateExistingFileIgnoresQuotaPreflight(t *testing.T) {
 	}, "existing.txt", out)
 	if status != fuse.Status(syscall.EEXIST) {
 		t.Fatalf("Create status = %v, want EEXIST", status)
+	}
+}
+
+func TestMkdirDoesNotIssueSeparateParentUpdateRPC(t *testing.T) {
+	wfs, testServer := newCreateTestWFS(t)
+
+	out := &fuse.EntryOut{}
+	if status := wfs.Mkdir(make(chan struct{}), &fuse.MkdirIn{
+		InHeader: fuse.InHeader{
+			NodeId: 1,
+			Caller: fuse.Caller{
+				Owner: fuse.Owner{
+					Uid: 123,
+					Gid: 456,
+				},
+			},
+		},
+		Mode: 0o755,
+	}, "trash-child", out); status != fuse.OK {
+		t.Fatalf("Mkdir status = %v, want OK", status)
+	}
+
+	snapshot := testServer.snapshot()
+	if snapshot.createCalls != 1 {
+		t.Fatalf("CreateEntry calls = %d, want 1", snapshot.createCalls)
+	}
+	if snapshot.updateCalls != 0 {
+		t.Fatalf("UpdateEntry calls = %d, want 0", snapshot.updateCalls)
 	}
 }

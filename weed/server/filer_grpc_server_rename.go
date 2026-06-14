@@ -39,11 +39,18 @@ func (fs *FilerServer) AtomicRenameEntry(ctx context.Context, req *filer_pb.Atom
 	if moveErr != nil {
 		fs.filer.RollbackTransaction(ctx)
 		return nil, fmt.Errorf("%s/%s move error: %v", req.OldDirectory, req.OldName, moveErr)
-	} else {
-		if commitError := fs.filer.CommitTransaction(ctx); commitError != nil {
-			fs.filer.RollbackTransaction(ctx)
-			return nil, fmt.Errorf("%s/%s move commit error: %v", req.OldDirectory, req.OldName, commitError)
-		}
+	}
+	parentUpdates, err := fs.filer.TouchDirectories(ctx, []util.FullPath{oldParent, newParent})
+	if err != nil {
+		fs.filer.RollbackTransaction(ctx)
+		return nil, fmt.Errorf("%s/%s touch parent directories: %v", req.OldDirectory, req.OldName, err)
+	}
+	if commitError := fs.filer.CommitTransaction(ctx); commitError != nil {
+		fs.filer.RollbackTransaction(ctx)
+		return nil, fmt.Errorf("%s/%s move commit error: %v", req.OldDirectory, req.OldName, commitError)
+	}
+	for _, update := range parentUpdates {
+		fs.filer.NotifyUpdateEvent(ctx, update.OldEntry, update.NewEntry, false, false, nil)
 	}
 	for _, event := range metadataEvents {
 		event.notify(fs.filer, ctx, req.Signatures)
@@ -96,11 +103,18 @@ func (fs *FilerServer) StreamRenameEntry(req *filer_pb.StreamRenameEntryRequest,
 	if moveErr != nil {
 		fs.filer.RollbackTransaction(ctx)
 		return fmt.Errorf("%s/%s move error: %v", req.OldDirectory, req.OldName, moveErr)
-	} else {
-		if commitError := fs.filer.CommitTransaction(ctx); commitError != nil {
-			fs.filer.RollbackTransaction(ctx)
-			return fmt.Errorf("%s/%s move commit error: %v", req.OldDirectory, req.OldName, commitError)
-		}
+	}
+	parentUpdates, err := fs.filer.TouchDirectories(ctx, []util.FullPath{oldParent, newParent})
+	if err != nil {
+		fs.filer.RollbackTransaction(ctx)
+		return fmt.Errorf("%s/%s touch parent directories: %v", req.OldDirectory, req.OldName, err)
+	}
+	if commitError := fs.filer.CommitTransaction(ctx); commitError != nil {
+		fs.filer.RollbackTransaction(ctx)
+		return fmt.Errorf("%s/%s move commit error: %v", req.OldDirectory, req.OldName, commitError)
+	}
+	for _, update := range parentUpdates {
+		fs.filer.NotifyUpdateEvent(ctx, update.OldEntry, update.NewEntry, false, false, nil)
 	}
 	for _, event := range metadataEvents {
 		event.notify(fs.filer, ctx, req.Signatures)

@@ -131,6 +131,17 @@ func (f *Filer) doBatchDeleteFolderMetaAndData(ctx context.Context, entry *Entry
 		return fmt.Errorf("filer store delete: %w", storeDeletionErr)
 	}
 
+	if !metadataEventsSuppressed(ctx) {
+		parentDir, _ := entry.FullPath.DirAndName()
+		touchedDirs, err := f.TouchDirectories(ctx, []util.FullPath{util.FullPath(parentDir)})
+		if err != nil {
+			return err
+		}
+		for _, touched := range touchedDirs {
+			f.NotifyUpdateEvent(ctx, touched.OldEntry, touched.NewEntry, false, isFromOtherCluster, nil)
+		}
+	}
+
 	f.NotifyUpdateEvent(ctx, entry, nil, shouldDeleteChunks, isFromOtherCluster, signatures)
 	f.DeleteChunks(ctx, entry.FullPath, chunksToDelete)
 
@@ -152,6 +163,16 @@ func (f *Filer) doDeleteEntryMetaAndData(ctx context.Context, entry *Entry, shou
 	}
 
 	if !entry.IsDirectory() {
+		if !metadataEventsSuppressed(ctx) {
+			parentDir, _ := entry.FullPath.DirAndName()
+			touchedDirs, err := f.TouchDirectories(ctx, []util.FullPath{util.FullPath(parentDir)})
+			if err != nil {
+				return err
+			}
+			for _, touched := range touchedDirs {
+				f.NotifyUpdateEvent(ctx, touched.OldEntry, touched.NewEntry, false, isFromOtherCluster, nil)
+			}
+		}
 		f.NotifyUpdateEvent(ctx, entry, nil, shouldDeleteChunks, isFromOtherCluster, signatures)
 	}
 

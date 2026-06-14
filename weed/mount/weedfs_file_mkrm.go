@@ -245,8 +245,7 @@ func (wfs *WFS) Unlink(cancel <-chan struct{}, header *fuse.InHeader, name strin
 		glog.Warningf("unlink %s: best-effort metadata apply failed: %v", entryFullPath, applyErr)
 		wfs.inodeToPath.InvalidateChildrenCache(dirFullPath)
 	}
-	wfs.inodeToPath.TouchDirectory(dirFullPath)
-	wfs.touchDirMtimeCtimeBest(dirFullPath)
+	wfs.touchDirAfterMutationLocal(dirFullPath)
 
 	wfs.inodeToPath.RemovePath(entryFullPath)
 
@@ -314,8 +313,7 @@ func (wfs *WFS) createRegularFile(dirFullPath util.FullPath, name string, mode u
 		if insertErr := wfs.metaCache.InsertEntry(context.Background(), filer.FromPbEntry(string(dirFullPath), newEntry)); insertErr != nil {
 			glog.Warningf("createFile %s: insert local entry: %v", entryFullPath, insertErr)
 		}
-		wfs.inodeToPath.TouchDirectory(dirFullPath)
-		wfs.touchDirMtimeCtimeBest(dirFullPath)
+		wfs.touchDirAfterMutationLocal(dirFullPath)
 
 		if deferFilerCreate {
 			// Fully deferred: the caller (Create) will build a file handle
@@ -354,8 +352,7 @@ func (wfs *WFS) createRegularFile(dirFullPath util.FullPath, name string, mode u
 			glog.Warningf("createFile %s: best-effort metadata apply failed: %v", entryFullPath, applyErr)
 			wfs.inodeToPath.InvalidateChildrenCache(dirFullPath)
 		}
-		wfs.inodeToPath.TouchDirectory(dirFullPath)
-		wfs.touchDirMtimeCtimeBest(dirFullPath)
+		wfs.touchDirAfterMutationLocal(dirFullPath)
 	}
 
 	glog.V(3).Infof("createFile %s: %v", entryFullPath, err)

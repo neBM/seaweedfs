@@ -259,6 +259,17 @@ func (f *Filer) CreateEntryWithExpectedRevision(ctx context.Context, entry *Entr
 		}
 	}
 
+	if oldEntry == nil && !metadataEventsSuppressed(ctx) {
+		parentDir, _ := entry.FullPath.DirAndName()
+		touchedDirs, err := f.TouchDirectories(ctx, []util.FullPath{util.FullPath(parentDir)})
+		if err != nil {
+			return err
+		}
+		for _, touched := range touchedDirs {
+			f.NotifyUpdateEvent(ctx, touched.OldEntry, touched.NewEntry, false, isFromOtherCluster, nil)
+		}
+	}
+
 	f.NotifyUpdateEvent(ctx, oldEntry, entry, true, isFromOtherCluster, signatures)
 
 	f.deleteChunksIfNotNew(ctx, oldEntry, entry)

@@ -76,8 +76,7 @@ func (wfs *WFS) Mkdir(cancel <-chan struct{}, in *fuse.MkdirIn, name string, out
 			glog.Warningf("mkdir %s: best-effort metadata apply failed: %v", entryFullPath, applyErr)
 			wfs.inodeToPath.InvalidateChildrenCache(dirFullPath)
 		}
-		wfs.inodeToPath.TouchDirectory(dirFullPath)
-		wfs.touchDirMtimeCtimeBest(dirFullPath)
+		wfs.touchDirAfterMutationLocal(dirFullPath)
 		wfs.inodeToPath.AdjustSubdirCount(dirFullPath, 1)
 	}
 
@@ -159,8 +158,7 @@ func (wfs *WFS) Rmdir(cancel <-chan struct{}, header *fuse.InHeader, name string
 		wfs.inodeToPath.InvalidateChildrenCache(dirFullPath)
 	}
 	wfs.inodeToPath.RemovePath(entryFullPath)
-	wfs.inodeToPath.TouchDirectory(dirFullPath)
-	wfs.touchDirMtimeCtimeBest(dirFullPath)
+	wfs.touchDirAfterMutationLocal(dirFullPath)
 	wfs.inodeToPath.AdjustSubdirCount(dirFullPath, -1)
 
 	return fuse.OK
