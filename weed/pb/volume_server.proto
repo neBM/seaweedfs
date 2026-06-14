@@ -125,6 +125,8 @@ service VolumeServer {
     // scrubbing
     rpc ScrubVolume (ScrubVolumeRequest) returns (ScrubVolumeResponse) {
     }
+    rpc RepairVolumeTail (RepairVolumeTailRequest) returns (RepairVolumeTailResponse) {
+    }
     rpc ScrubEcVolume (ScrubEcVolumeRequest) returns (ScrubEcVolumeResponse) {
     }
 
@@ -663,6 +665,19 @@ message ScrubVolumeResponse {
     uint64 total_files = 2;
     repeated uint32 broken_volume_ids = 3;
     repeated string details = 4;
+}
+
+message RepairVolumeTailRequest {
+    uint32 volume_id = 1;
+    bool apply = 2;
+    bool mark_writable = 3;
+    string backup_dir = 4;
+}
+message RepairVolumeTailResponse {
+    repeated string details = 1;
+    repeated string backup_files = 2;
+    bool applied = 3;
+    bool marked_writable = 4;
 }
 
 message ScrubEcVolumeRequest {
