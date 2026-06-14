@@ -16,8 +16,9 @@ import (
 type DirectoryHandleId uint64
 
 const (
-	directoryStreamBaseOffset = 2 // . & ..
-	batchSize                 = 1000
+	directoryStreamBaseOffset  = 2 // . & ..
+	batchSize                  = 1000
+	slowReadDirHandleThreshold = 100 * time.Millisecond
 )
 
 // DirectoryHandle represents an open directory handle.
@@ -31,6 +32,12 @@ type DirectoryHandle struct {
 	snapshotTsNs      int64 // snapshot timestamp for consistent readdir in direct mode
 	refreshBuildOwned bool
 	refreshBuildDir   util.FullPath
+	dirPath           util.FullPath
+	openFlags         uint32
+	readSource        string
+	readCalls         int
+	readEntries       int
+	readDuration      time.Duration
 }
 
 func (dh *DirectoryHandle) reset() {
@@ -38,6 +45,10 @@ func (dh *DirectoryHandle) reset() {
 	dh.snapshotTsNs = 0
 	dh.refreshBuildOwned = false
 	dh.refreshBuildDir = ""
+	dh.readSource = ""
+	dh.readCalls = 0
+	dh.readEntries = 0
+	dh.readDuration = 0
 	// Nil out pointers to allow garbage collection of old entries,
 	// then reuse the slice's capacity to avoid re-allocations.
 	for i := range dh.entryStream {
@@ -45,6 +56,28 @@ func (dh *DirectoryHandle) reset() {
 	}
 	dh.entryStream = dh.entryStream[:0]
 	dh.entryStreamOffset = directoryStreamBaseOffset
+}
+
+func (dh *DirectoryHandle) recordRead(duration time.Duration, entriesEmitted int, source string) {
+	dh.readCalls++
+	dh.readEntries += entriesEmitted
+	dh.readDuration += duration
+	if dh.readSource == "" && source != "" {
+		dh.readSource = source
+	}
+}
+
+func (dh *DirectoryHandle) logIfSlow() {
+	if dh.readCalls == 0 || dh.readDuration < slowReadDirHandleThreshold || dh.dirPath == "" {
+		return
+	}
+	source := dh.readSource
+	if source == "" {
+		source = "unknown"
+	}
+	avg := dh.readDuration / time.Duration(dh.readCalls)
+	glog.Infof("SLOWREADDIR path=%s source=%s calls=%d entries=%d total=%s avg=%s open_flags=0x%x finished=%v",
+		dh.dirPath, source, dh.readCalls, dh.readEntries, dh.readDuration, avg, dh.openFlags, dh.isFinished)
 }
 
 type DirectoryHandleToInode struct {
@@ -107,11 +140,13 @@ func (wfs *WFS) OpenDir(cancel <-chan struct{}, input *fuse.OpenIn, out *fuse.Op
 	if !wfs.inodeToPath.HasInode(input.NodeId) {
 		return fuse.ENOENT
 	}
-	dhid, _ := wfs.AcquireDirectoryHandle()
+	dhid, dh := wfs.AcquireDirectoryHandle()
 	out.Fh = uint64(dhid)
 	if dirPath, status := wfs.inodeToPath.GetPath(input.NodeId); status == fuse.OK {
+		dh.dirPath = dirPath
 		if wfs.inodeToPath.IsChildrenCached(dirPath) && !wfs.inodeToPath.ShouldReadDirectoryDirect(dirPath) {
 			out.OpenFlags = fuse.FOPEN_CACHE_DIR | fuse.FOPEN_KEEP_CACHE
+			dh.openFlags = out.OpenFlags
 		}
 	}
 	return fuse.OK
@@ -125,6 +160,7 @@ func (wfs *WFS) OpenDir(cancel <-chan struct{}, input *fuse.OpenIn, out *fuse.Op
 func (wfs *WFS) ReleaseDir(input *fuse.ReleaseIn) {
 	if dh := wfs.getExistingDirectoryHandle(DirectoryHandleId(input.Fh)); dh != nil {
 		dh.Lock()
+		dh.logIfSlow()
 		wfs.abortDirectoryDirectCacheRefresh(dh)
 		dh.Unlock()
 	}
@@ -173,6 +209,12 @@ func (wfs *WFS) doReadDirectory(input *fuse.ReadIn, out *fuse.DirEntryList, isPl
 	dh := wfs.GetDirectoryHandle(DirectoryHandleId(input.Fh))
 	dh.Lock()
 	defer dh.Unlock()
+	start := time.Now()
+	entriesEmitted := 0
+	source := dh.readSource
+	defer func() {
+		dh.recordRead(time.Since(start), entriesEmitted, source)
+	}()
 
 	if input.Offset == 0 {
 		wfs.abortDirectoryDirectCacheRefresh(dh)
@@ -218,6 +260,7 @@ func (wfs *WFS) doReadDirectory(input *fuse.ReadIn, out *fuse.DirEntryList, isPl
 			wfs.outputFilerEntry(entryOut, inode, entry)
 			wfs.inodeToPath.Lookup(dirPath.Child(dirEntry.Name), entry.Crtime.Unix(), entry.IsDirectory(), len(entry.HardLinkId) > 0, entry.Inode, true)
 		}
+		entriesEmitted++
 		return true
 	}
 
@@ -236,12 +279,17 @@ func (wfs *WFS) doReadDirectory(input *fuse.ReadIn, out *fuse.DirEntryList, isPl
 		input.Offset = directoryStreamBaseOffset
 	}
 	if len(dh.entryStream) == 0 && input.Offset >= dh.entryStreamOffset {
-		wfs.seedDirectoryHandleFromHotListing(dh, dirPath)
+		if wfs.seedDirectoryHandleFromHotListing(dh, dirPath) && source == "" {
+			source = "hot_listing"
+		}
 	}
 
 	var lastEntryName string
 
 	if wfs.inodeToPath.ShouldReadDirectoryDirect(dirPath) {
+		if source == "" {
+			source = "direct"
+		}
 		return wfs.readDirectoryDirect(input, out, dh, dirPath, processEachEntryFn)
 	}
 
@@ -250,6 +298,9 @@ func (wfs *WFS) doReadDirectory(input *fuse.ReadIn, out *fuse.DirEntryList, isPl
 		// Handle case: new handle with non-zero offset but empty cache
 		// This happens when NFS-Ganesha opens multiple directory handles
 		if len(dh.entryStream) == 0 && input.Offset > dh.entryStreamOffset {
+			if source == "" {
+				source = "meta_cache"
+			}
 			skipCount := int64(input.Offset - dh.entryStreamOffset)
 
 			if err := meta_cache.EnsureVisited(wfs.metaCache, wfs, dirPath); err != nil {
@@ -296,6 +347,9 @@ func (wfs *WFS) doReadDirectory(input *fuse.ReadIn, out *fuse.DirEntryList, isPl
 		}
 
 		// Batch loading: fetch batchSize entries starting from lastEntryName
+		if source == "" {
+			source = "meta_cache"
+		}
 		loadedCount := 0
 		bufferFull := false
 		loadErr := wfs.listCachedDirectoryEntries(context.Background(), dirPath, lastEntryName, false, int64(batchSize), func(entry *filer.Entry) (bool, error) {
