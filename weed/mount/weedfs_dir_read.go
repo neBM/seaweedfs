@@ -109,6 +109,11 @@ func (wfs *WFS) OpenDir(cancel <-chan struct{}, input *fuse.OpenIn, out *fuse.Op
 	}
 	dhid, _ := wfs.AcquireDirectoryHandle()
 	out.Fh = uint64(dhid)
+	if dirPath, status := wfs.inodeToPath.GetPath(input.NodeId); status == fuse.OK {
+		if wfs.inodeToPath.IsChildrenCached(dirPath) && !wfs.inodeToPath.ShouldReadDirectoryDirect(dirPath) {
+			out.OpenFlags = fuse.FOPEN_CACHE_DIR | fuse.FOPEN_KEEP_CACHE
+		}
+	}
 	return fuse.OK
 }
 

@@ -380,6 +380,47 @@ func TestReadDirFullDirectReadPromotesDirectoryBackToCache(t *testing.T) {
 	}
 }
 
+func TestOpenDirEnablesKernelDirectoryCacheForHotDirs(t *testing.T) {
+	wfs, _ := newDirectoryReadTestWFS(t, nil)
+
+	dirPath := util.FullPath("/dir")
+	dirInode := wfs.inodeToPath.Lookup(dirPath, time.Now().Unix(), true, false, 0, false)
+	wfs.inodeToPath.MarkChildrenCached(dirPath)
+
+	var out fuse.OpenOut
+	if status := wfs.OpenDir(make(chan struct{}), &fuse.OpenIn{
+		InHeader: fuse.InHeader{NodeId: dirInode},
+	}, &out); status != fuse.OK {
+		t.Fatalf("OpenDir status = %v, want OK", status)
+	}
+
+	wantFlags := uint32(fuse.FOPEN_CACHE_DIR | fuse.FOPEN_KEEP_CACHE)
+	if out.OpenFlags != wantFlags {
+		t.Fatalf("OpenDir flags = %#x, want %#x", out.OpenFlags, wantFlags)
+	}
+}
+
+func TestOpenDirSkipsKernelDirectoryCacheForReadThroughDirs(t *testing.T) {
+	wfs, _ := newDirectoryReadTestWFS(t, nil)
+
+	dirPath := util.FullPath("/dir")
+	dirInode := wfs.inodeToPath.Lookup(dirPath, time.Now().Unix(), true, false, 0, false)
+	wfs.inodeToPath.MarkChildrenCached(dirPath)
+	if !wfs.inodeToPath.MarkDirectoryReadThrough(dirPath, time.Now()) {
+		t.Fatal("failed to switch directory to read-through mode")
+	}
+
+	var out fuse.OpenOut
+	if status := wfs.OpenDir(make(chan struct{}), &fuse.OpenIn{
+		InHeader: fuse.InHeader{NodeId: dirInode},
+	}, &out); status != fuse.OK {
+		t.Fatalf("OpenDir status = %v, want OK", status)
+	}
+	if out.OpenFlags != 0 {
+		t.Fatalf("OpenDir flags = %#x, want 0", out.OpenFlags)
+	}
+}
+
 func TestReleaseDirAbortsIncompleteDirectReadRefresh(t *testing.T) {
 	wfs, _ := newDirectoryReadTestWFS(t, map[string][]*filer_pb.Entry{
 		"/dir": {
