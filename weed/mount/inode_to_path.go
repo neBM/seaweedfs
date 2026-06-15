@@ -201,7 +201,7 @@ func (i *InodeToPath) MarkChildrenCached(fullpath util.FullPath) {
 		path.cachedExpiresTime = now.Add(i.cacheMetaTtlSec)
 	}
 	if !wasCached || wasDirect {
-		glog.Infof("DIRCACHE path=%s reason=mark_children_cached cached=true direct=false", fullpath)
+		glog.V(2).Infof("DIRCACHE path=%s reason=mark_children_cached cached=true direct=false", fullpath)
 	}
 }
 
@@ -258,7 +258,7 @@ func (i *InodeToPath) InvalidateChildrenCacheWithReason(fullpath util.FullPath, 
 		return
 	}
 	if entry.isChildrenCached || entry.readDirDirect {
-		glog.Infof("DIRCACHE path=%s reason=%s cached_before=%v direct_before=%v", fullpath, reason, entry.isChildrenCached, entry.readDirDirect)
+		glog.V(2).Infof("DIRCACHE path=%s reason=%s cached_before=%v direct_before=%v", fullpath, reason, entry.isChildrenCached, entry.readDirDirect)
 	}
 	entry.resetCacheState()
 }
@@ -344,7 +344,7 @@ func (i *InodeToPath) MarkDirectoryReadThrough(fullpath util.FullPath, now time.
 	entry.lastRefresh = time.Time{}
 	entry.updateCount = 0
 	entry.updateWindowStart = time.Time{}
-	glog.Infof("DIRCACHE path=%s reason=explicit_read_through cached=false direct=true", fullpath)
+	glog.V(2).Infof("DIRCACHE path=%s reason=explicit_read_through cached=false direct=true", fullpath)
 	return true
 }
 
@@ -375,7 +375,7 @@ func (i *InodeToPath) RecordDirectoryUpdate(fullpath util.FullPath, now time.Tim
 		entry.lastRefresh = time.Time{}
 		entry.updateCount = 0
 		entry.updateWindowStart = time.Time{}
-		glog.Infof("DIRCACHE path=%s reason=hot_updates cached=false direct=true threshold=%d window=%s", fullpath, threshold, window)
+		glog.V(2).Infof("DIRCACHE path=%s reason=hot_updates cached=false direct=true threshold=%d window=%s", fullpath, threshold, window)
 		return true
 	}
 	return false
@@ -416,7 +416,7 @@ func (i *InodeToPath) MarkDirectoryRefreshed(fullpath util.FullPath, now time.Ti
 		if i.cacheMetaTtlSec > 0 {
 			entry.cachedExpiresTime = now.Add(i.cacheMetaTtlSec)
 		}
-		glog.Infof("DIRCACHE path=%s reason=direct_read_refresh_complete cached=true direct=false", fullpath)
+		glog.V(2).Infof("DIRCACHE path=%s reason=direct_read_refresh_complete cached=true direct=false", fullpath)
 		return
 	}
 
@@ -425,7 +425,7 @@ func (i *InodeToPath) MarkDirectoryRefreshed(fullpath util.FullPath, now time.Ti
 		// directory in read-through mode until a later cache build completes.
 		entry.readDirDirect = true
 		entry.cachedExpiresTime = time.Time{}
-		glog.Infof("DIRCACHE path=%s reason=direct_read_refresh_without_cache cached=false direct=true", fullpath)
+		glog.V(2).Infof("DIRCACHE path=%s reason=direct_read_refresh_without_cache cached=false direct=true", fullpath)
 	}
 }
 
