@@ -12,12 +12,12 @@ import (
 var lookupSupplementaryGroupIDs = func(callerUid uint32) ([]string, error) {
 	u, err := user.LookupId(strconv.Itoa(int(callerUid)))
 	if err != nil {
-		glog.Warningf("hasAccess: user.LookupId for uid %d failed: %v", callerUid, err)
+		glog.V(2).Infof("hasAccess: user.LookupId for uid %d failed: %v", callerUid, err)
 		return nil, err
 	}
 	groupIDs, err := u.GroupIds()
 	if err != nil {
-		glog.Warningf("hasAccess: u.GroupIds for uid %d failed: %v", callerUid, err)
+		glog.V(2).Infof("hasAccess: u.GroupIds for uid %d failed: %v", callerUid, err)
 		return nil, err
 	}
 	return groupIDs, nil
