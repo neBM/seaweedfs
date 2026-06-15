@@ -34,17 +34,20 @@ func (wfs *WFS) PrepareHotRestartGate() HotRestartStatusSnapshot {
 	}
 	if status.Quiescent() {
 		wfs.hotRestartBlocked = true
+		wfs.hotRestartPreserveOnExit = true
 		status.BlockingNewHandles = true
 		return status
 	}
 
 	wfs.hotRestartBlocked = false
+	wfs.hotRestartPreserveOnExit = false
 	return status
 }
 
 func (wfs *WFS) CancelHotRestartGate() {
 	wfs.hotRestartMu.Lock()
 	wfs.hotRestartBlocked = false
+	wfs.hotRestartPreserveOnExit = false
 	wfs.hotRestartMu.Unlock()
 }
 

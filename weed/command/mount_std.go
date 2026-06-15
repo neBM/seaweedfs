@@ -386,7 +386,9 @@ func RunMount(option *MountOptions, umask os.FileMode) bool {
 	}
 	if !hotRestartEnabled {
 		grace.OnInterrupt(func() {
-			unmount.Unmount(dir)
+			if !seaweedFileSystem.PreserveMountArtifactsOnExit() {
+				unmount.Unmount(dir)
+			}
 		})
 	}
 
@@ -419,7 +421,7 @@ func RunMount(option *MountOptions, umask os.FileMode) bool {
 	// before clearing caches, to prevent data loss during clean unmount.
 	seaweedFileSystem.WaitForAsyncFlush()
 
-	if !hotRestartEnabled {
+	if !seaweedFileSystem.PreserveMountArtifactsOnExit() {
 		seaweedFileSystem.ClearCacheDir()
 	}
 

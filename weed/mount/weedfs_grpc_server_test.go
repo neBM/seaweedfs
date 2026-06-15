@@ -120,3 +120,29 @@ func TestPrepareHotRestartBlocksOpenDirUntilCancelled(t *testing.T) {
 	}
 	wfs.ReleaseDir(&fuse.ReleaseIn{Fh: out.Fh})
 }
+
+func TestPrepareHotRestartPreservesMountArtifactsUntilCancelled(t *testing.T) {
+	wfs := newHotRestartLiveTestWFS(t)
+
+	if wfs.PreserveMountArtifactsOnExit() {
+		t.Fatal("fresh worker unexpectedly preserves mount artifacts on exit")
+	}
+
+	resp, err := wfs.PrepareHotRestart(context.Background(), &mount_pb.PrepareHotRestartRequest{})
+	if err != nil {
+		t.Fatalf("PrepareHotRestart returned error: %v", err)
+	}
+	if !resp.Accepted {
+		t.Fatalf("PrepareHotRestart rejected a quiescent worker: %+v", resp.Status)
+	}
+	if !wfs.PreserveMountArtifactsOnExit() {
+		t.Fatal("PrepareHotRestart did not enable preserve-on-exit mode")
+	}
+
+	if _, err := wfs.CancelHotRestart(context.Background(), &mount_pb.CancelHotRestartRequest{}); err != nil {
+		t.Fatalf("CancelHotRestart returned error: %v", err)
+	}
+	if wfs.PreserveMountArtifactsOnExit() {
+		t.Fatal("CancelHotRestart left preserve-on-exit mode enabled")
+	}
+}

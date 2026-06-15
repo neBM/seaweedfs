@@ -171,8 +171,9 @@ type WFS struct {
 	// Non-nil only when EnableDistributedLock is true.
 	lockClient *cluster.LockClient
 
-	hotRestartMu      sync.RWMutex
-	hotRestartBlocked bool
+	hotRestartMu             sync.RWMutex
+	hotRestartBlocked        bool
+	hotRestartPreserveOnExit bool
 }
 
 const (
@@ -302,7 +303,7 @@ func NewSeaweedFileSystem(option *Option) *WFS {
 			}
 		}
 		wfs.metaCache.Shutdown()
-		if !option.HotRestartEnabled {
+		if !wfs.PreserveMountArtifactsOnExit() {
 			if asyncDrained {
 				os.RemoveAll(option.getUniqueCacheDirForWrite())
 			}
@@ -515,11 +516,21 @@ func (wfs *WFS) getCurrentFiler() pb.ServerAddress {
 
 func (wfs *WFS) ClearCacheDir() {
 	wfs.metaCache.Shutdown()
-	if wfs.option != nil && wfs.option.HotRestartEnabled {
+	if wfs.PreserveMountArtifactsOnExit() {
 		return
 	}
 	os.RemoveAll(wfs.option.getUniqueCacheDirForWrite())
 	os.RemoveAll(wfs.option.getUniqueCacheDirForRead())
+}
+
+func (wfs *WFS) PreserveMountArtifactsOnExit() bool {
+	if wfs.option != nil && wfs.option.HotRestartEnabled {
+		return true
+	}
+
+	wfs.hotRestartMu.RLock()
+	defer wfs.hotRestartMu.RUnlock()
+	return wfs.hotRestartPreserveOnExit
 }
 
 func (wfs *WFS) markDirectoryReadThrough(dirPath util.FullPath) {
