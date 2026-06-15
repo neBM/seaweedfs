@@ -99,6 +99,11 @@ type Option struct {
 	// When false (default), directories report nlink=2.
 	PosixDirNlink bool
 
+	// HotRestartEnabled keeps mount lifecycle ownership outside this worker.
+	// When true, startup/shutdown logic must not unmount the mountpoint or
+	// delete shared cache state as part of a worker replacement handoff.
+	HotRestartEnabled bool
+
 	uniqueCacheDirForRead  string
 	uniqueCacheDirForWrite string
 }
@@ -165,6 +170,9 @@ type WFS struct {
 	// lockClient is the DLM client for cross-mount write coordination.
 	// Non-nil only when EnableDistributedLock is true.
 	lockClient *cluster.LockClient
+
+	hotRestartMu      sync.RWMutex
+	hotRestartBlocked bool
 }
 
 const (
@@ -294,10 +302,12 @@ func NewSeaweedFileSystem(option *Option) *WFS {
 			}
 		}
 		wfs.metaCache.Shutdown()
-		if asyncDrained {
-			os.RemoveAll(option.getUniqueCacheDirForWrite())
+		if !option.HotRestartEnabled {
+			if asyncDrained {
+				os.RemoveAll(option.getUniqueCacheDirForWrite())
+			}
+			os.RemoveAll(option.getUniqueCacheDirForRead())
 		}
-		os.RemoveAll(option.getUniqueCacheDirForRead())
 		if wfs.rdmaClient != nil {
 			wfs.rdmaClient.Close()
 		}
@@ -505,6 +515,9 @@ func (wfs *WFS) getCurrentFiler() pb.ServerAddress {
 
 func (wfs *WFS) ClearCacheDir() {
 	wfs.metaCache.Shutdown()
+	if wfs.option != nil && wfs.option.HotRestartEnabled {
+		return
+	}
 	os.RemoveAll(wfs.option.getUniqueCacheDirForWrite())
 	os.RemoveAll(wfs.option.getUniqueCacheDirForRead())
 }

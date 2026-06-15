@@ -16,6 +16,15 @@ service SeaweedMount {
     rpc RefreshVolumeLocations (RefreshVolumeLocationsRequest) returns (RefreshVolumeLocationsResponse) {
     }
 
+    rpc HotRestartStatus (HotRestartStatusRequest) returns (HotRestartStatusResponse) {
+    }
+
+    rpc PrepareHotRestart (PrepareHotRestartRequest) returns (PrepareHotRestartResponse) {
+    }
+
+    rpc CancelHotRestart (CancelHotRestartRequest) returns (CancelHotRestartResponse) {
+    }
+
 }
 
 //////////////////////////////////////////////////
@@ -31,4 +40,29 @@ message RefreshVolumeLocationsRequest {
 }
 
 message RefreshVolumeLocationsResponse {
+}
+
+message HotRestartStatusRequest {
+}
+
+message HotRestartStatusResponse {
+    uint64 open_file_handles = 1;
+    uint64 open_directory_handles = 2;
+    uint64 pending_async_flushes = 3;
+    bool quiescent = 4;
+    bool blocking_new_handles = 5;
+}
+
+message PrepareHotRestartRequest {
+}
+
+message PrepareHotRestartResponse {
+    bool accepted = 1;
+    HotRestartStatusResponse status = 2;
+}
+
+message CancelHotRestartRequest {
+}
+
+message CancelHotRestartResponse {
 }

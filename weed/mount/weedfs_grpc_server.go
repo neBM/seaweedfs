@@ -29,3 +29,30 @@ func (wfs *WFS) RefreshVolumeLocations(ctx context.Context, request *mount_pb.Re
 	wfs.filerClient.RefreshVolumeLocations()
 	return &mount_pb.RefreshVolumeLocationsResponse{}, nil
 }
+
+func (wfs *WFS) HotRestartStatus(ctx context.Context, request *mount_pb.HotRestartStatusRequest) (*mount_pb.HotRestartStatusResponse, error) {
+	return hotRestartStatusToProto(wfs.HotRestartStatusSnapshot()), nil
+}
+
+func (wfs *WFS) PrepareHotRestart(ctx context.Context, request *mount_pb.PrepareHotRestartRequest) (*mount_pb.PrepareHotRestartResponse, error) {
+	status := wfs.PrepareHotRestartGate()
+	return &mount_pb.PrepareHotRestartResponse{
+		Accepted: status.Quiescent() && status.BlockingNewHandles,
+		Status:   hotRestartStatusToProto(status),
+	}, nil
+}
+
+func (wfs *WFS) CancelHotRestart(ctx context.Context, request *mount_pb.CancelHotRestartRequest) (*mount_pb.CancelHotRestartResponse, error) {
+	wfs.CancelHotRestartGate()
+	return &mount_pb.CancelHotRestartResponse{}, nil
+}
+
+func hotRestartStatusToProto(status HotRestartStatusSnapshot) *mount_pb.HotRestartStatusResponse {
+	return &mount_pb.HotRestartStatusResponse{
+		OpenFileHandles:      uint64(status.OpenFileHandles),
+		OpenDirectoryHandles: uint64(status.OpenDirectoryHandles),
+		PendingAsyncFlushes:  uint64(status.PendingAsyncFlushes),
+		Quiescent:            status.Quiescent(),
+		BlockingNewHandles:   status.BlockingNewHandles,
+	}
+}

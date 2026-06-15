@@ -2,6 +2,7 @@ package mount
 
 import (
 	"fmt"
+	"syscall"
 
 	"github.com/seaweedfs/go-fuse/v2/fuse"
 	"github.com/seaweedfs/seaweedfs/weed/cluster/lock_manager"
@@ -11,6 +12,12 @@ import (
 )
 
 func (wfs *WFS) AcquireHandle(inode uint64, flags, uid, gid uint32) (fileHandle *FileHandle, status fuse.Status) {
+	release, ok := wfs.beginHotRestartOpenGate()
+	if !ok {
+		return nil, fuse.Status(syscall.EBUSY)
+	}
+	defer release.Unlock()
+
 	// If there is an in-flight async flush for this inode, wait for it to
 	// complete before reopening.  Otherwise the new handle would be built
 	// from pre-close filer metadata and its next flush could overwrite the

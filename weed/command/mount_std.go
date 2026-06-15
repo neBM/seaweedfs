@@ -158,6 +158,7 @@ func RunMount(option *MountOptions, umask os.FileMode) bool {
 	}
 
 	filerMountRootPath := *option.filerMountRootPath
+	hotRestartEnabled := option.hotRestartMountFd != nil && *option.hotRestartMountFd >= 0
 
 	// clean up mount point
 	dir := util.ResolvePath(*option.dir)
@@ -166,7 +167,9 @@ func RunMount(option *MountOptions, umask os.FileMode) bool {
 		return false
 	}
 
-	unmount.Unmount(dir)
+	if !hotRestartEnabled {
+		unmount.Unmount(dir)
+	}
 
 	// start on local unix socket
 	if *option.localSocket == "" {
@@ -224,7 +227,7 @@ func RunMount(option *MountOptions, umask os.FileMode) bool {
 
 	// Ensure target mount point availability
 	skipAutofs := option.hasAutofs != nil && *option.hasAutofs
-	if isValid := checkMountPointAvailable(dir, skipAutofs); !isValid {
+	if !hotRestartEnabled && !checkMountPointAvailable(dir, skipAutofs) {
 		glog.Fatalf("Target mount point is not available: %s, please check!", dir)
 		return true
 	}
@@ -258,6 +261,9 @@ func RunMount(option *MountOptions, umask os.FileMode) bool {
 		DirectMountFlags:         0,
 		//SyncRead:                 false, // set to false to enable the FUSE_CAP_ASYNC_READ capability
 		EnableAcl: true,
+	}
+	if hotRestartEnabled {
+		fuseMountOptions.AdoptLiveFD = option.hotRestartAdoptLiveFd != nil && *option.hotRestartAdoptLiveFd
 	}
 	if *option.defaultPermissions {
 		fuseMountOptions.Options = append(fuseMountOptions.Options, "default_permissions")
@@ -355,6 +361,7 @@ func RunMount(option *MountOptions, umask os.FileMode) bool {
 		EnableDistributedLock: option.distributedLock != nil && *option.distributedLock,
 		WritebackCache:        option.writebackCache != nil && *option.writebackCache,
 		PosixDirNlink:         option.posixDirNlink != nil && *option.posixDirNlink,
+		HotRestartEnabled:     hotRestartEnabled,
 	})
 
 	// create mount root
@@ -369,13 +376,19 @@ func RunMount(option *MountOptions, umask os.FileMode) bool {
 		return false
 	}
 
-	server, err := fuse.NewServer(seaweedFileSystem, dir, fuseMountOptions)
+	mountTarget := dir
+	if hotRestartEnabled {
+		mountTarget = fmt.Sprintf("/dev/fd/%d", *option.hotRestartMountFd)
+	}
+	server, err := fuse.NewServer(seaweedFileSystem, mountTarget, fuseMountOptions)
 	if err != nil {
 		glog.Fatalf("Mount fail: %v", err)
 	}
-	grace.OnInterrupt(func() {
-		unmount.Unmount(dir)
-	})
+	if !hotRestartEnabled {
+		grace.OnInterrupt(func() {
+			unmount.Unmount(dir)
+		})
+	}
 
 	if mountOptions.fuseCommandPid != 0 {
 		// send a signal to the parent process to notify that the mount is ready
@@ -406,7 +419,9 @@ func RunMount(option *MountOptions, umask os.FileMode) bool {
 	// before clearing caches, to prevent data loss during clean unmount.
 	seaweedFileSystem.WaitForAsyncFlush()
 
-	seaweedFileSystem.ClearCacheDir()
+	if !hotRestartEnabled {
+		seaweedFileSystem.ClearCacheDir()
+	}
 
 	return true
 }

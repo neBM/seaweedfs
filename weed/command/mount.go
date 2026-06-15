@@ -66,6 +66,9 @@ type MountOptions struct {
 	// macOS-specific FUSE options
 	novncache *bool
 
+	hotRestartMountFd     *int
+	hotRestartAdoptLiveFd *bool
+
 	// if true, we assume autofs exists over current mount point. Autofs (the kernel one, used by systemd automount)
 	// is expected to be mounted as a shim between auto-mounted fs and original mount point to provide auto mount.
 	// with this option, we ignore autofs mounted on the same point.
@@ -144,6 +147,8 @@ func init() {
 
 	// macOS-specific FUSE options
 	mountOptions.novncache = cmdMount.Flag.Bool("sys.novncache", false, "(macOS only) disable vnode name caching to avoid stale data")
+	mountOptions.hotRestartMountFd = cmdMount.Flag.Int("hotRestart.mountFd", -1, "reuse an existing FUSE mount file descriptor instead of mounting a new connection")
+	mountOptions.hotRestartAdoptLiveFd = cmdMount.Flag.Bool("hotRestart.adoptLiveFd", false, "adopt a live initialized FUSE fd during worker replacement")
 }
 
 var cmdMount = &Command{

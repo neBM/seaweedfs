@@ -31,6 +31,12 @@ func (wfs *WFS) Create(cancel <-chan struct{}, in *fuse.CreateIn, name string, o
 		return s
 	}
 
+	release, ok := wfs.beginHotRestartOpenGate()
+	if !ok {
+		return fuse.Status(syscall.EBUSY)
+	}
+	defer release.Unlock()
+
 	dirFullPath, code := wfs.inodeToPath.GetPath(in.NodeId)
 	if code != fuse.OK {
 		return code

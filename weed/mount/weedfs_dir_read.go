@@ -3,6 +3,7 @@ package mount
 import (
 	"context"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/seaweedfs/go-fuse/v2/fuse"
@@ -140,6 +141,13 @@ func (wfs *WFS) OpenDir(cancel <-chan struct{}, input *fuse.OpenIn, out *fuse.Op
 	if !wfs.inodeToPath.HasInode(input.NodeId) {
 		return fuse.ENOENT
 	}
+
+	release, ok := wfs.beginHotRestartOpenGate()
+	if !ok {
+		return fuse.Status(syscall.EBUSY)
+	}
+	defer release.Unlock()
+
 	dhid, dh := wfs.AcquireDirectoryHandle()
 	out.Fh = uint64(dhid)
 	if dirPath, status := wfs.inodeToPath.GetPath(input.NodeId); status == fuse.OK {
