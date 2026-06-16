@@ -15,12 +15,49 @@ ci_log_dir() {
   printf '%s\n' "$root/.artifacts/ci-logs"
 }
 
-use_local_go_cache() {
-  local root
+ci_cache_root() {
+  local root cache_root
   root="$(seaweed_repo_root)"
-  export GOMODCACHE="${GOMODCACHE:-$root/.cache/go-mod}"
-  export GOCACHE="${GOCACHE:-$root/.cache/go-build}"
+  cache_root="${SEAWEED_CI_CACHE_ROOT:-$root/.cache}"
+
+  if mkdir -p "$cache_root" 2>/dev/null; then
+    printf '%s\n' "$cache_root"
+  else
+    cache_root="$root/.cache"
+    mkdir -p "$cache_root"
+    printf '%s\n' "$cache_root"
+  fi
+}
+
+use_local_go_cache() {
+  local root cache_root go_version
+  root="$(seaweed_repo_root)"
+  cache_root="$(ci_cache_root)"
+
+  if command -v go >/dev/null 2>&1; then
+    go_version="$(go env GOVERSION 2>/dev/null || true)"
+    if [ -z "$go_version" ]; then
+      go_version="$(go version | awk '{ print $3 }')"
+    fi
+  else
+    go_version="go$(awk '/^go / { print $2; exit }' "$root/go.mod")"
+  fi
+  go_version="${go_version//[^[:alnum:]._-]/_}"
+
+  export GOMODCACHE="${GOMODCACHE:-$cache_root/go-mod}"
+  export GOCACHE="${GOCACHE:-$cache_root/go-build-${go_version}}"
   mkdir -p "$GOMODCACHE" "$GOCACHE"
+}
+
+# Keep Cargo's registry/git cache on the shared cache root. Jobs that bootstrap
+# rustup set RUSTUP_HOME explicitly so they don't interfere with the prebuilt
+# rust image's toolchain layout.
+use_local_rust_cache() {
+  local cache_root
+  cache_root="$(ci_cache_root)"
+
+  export CARGO_HOME="${CARGO_HOME:-$cache_root/cargo}"
+  mkdir -p "$CARGO_HOME"
 }
 
 ensure_command() {

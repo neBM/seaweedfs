@@ -6,7 +6,8 @@ source "$(dirname "$0")/common.sh"
 
 root="$(seaweed_repo_root)"
 version="$(awk '/^go / { print $2; exit }' "$root/go.mod")"
-install_root="$root/.cache/go-toolchain"
+cache_root="$(ci_cache_root)"
+install_root="$cache_root/go-toolchain"
 target_dir="$install_root/go${version}"
 current_link="$install_root/current"
 

@@ -13,6 +13,8 @@ test_type="$1"
 shard="$2"
 root="$(seaweed_repo_root)"
 log_dir="$(ci_log_dir)"
+cache_root="$(ci_cache_root)"
+use_local_go_cache
 
 case "$test_type:$shard" in
   grpc:1) test_pattern='^Test[A-H]' ;;
@@ -27,11 +29,19 @@ case "$test_type:$shard" in
     ;;
 esac
 
-bash "$(dirname "$0")/build-rust-volume-artifacts.sh"
+if [ -z "${WEED_BINARY:-}" ] || [ -z "${RUST_VOLUME_BINARY:-}" ] || ! command -v go >/dev/null 2>&1; then
+  if [ -z "${WEED_BINARY:-}" ] && [ -x "$root/weed/weed" ]; then
+    export WEED_BINARY="$root/weed/weed"
+  fi
+  if [ -z "${RUST_VOLUME_BINARY:-}" ] && [ -x "$root/seaweed-volume/target/release/weed-volume" ]; then
+    export RUST_VOLUME_BINARY="$root/seaweed-volume/target/release/weed-volume"
+  fi
+  bash "$(dirname "$0")/build-rust-volume-artifacts.sh"
+  export WEED_BINARY="${WEED_BINARY:-$root/weed/weed}"
+  export RUST_VOLUME_BINARY="${RUST_VOLUME_BINARY:-$root/seaweed-volume/target/release/weed-volume}"
+fi
 
-export PATH="$root/.cache/go-toolchain/current/bin:$PATH"
-export WEED_BINARY="$root/weed/weed"
-export RUST_VOLUME_BINARY="$root/seaweed-volume/target/release/weed-volume"
+export PATH="$cache_root/go-toolchain/current/bin:$PATH"
 export VOLUME_SERVER_IMPL=rust
 
 cd "$root"

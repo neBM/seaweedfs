@@ -6,6 +6,7 @@ source "$(dirname "$0")/common.sh"
 
 root="$(seaweed_repo_root)"
 log_dir="$(ci_log_dir)"
+use_local_rust_cache
 
 cd "$root/seaweed-volume"
 cargo build --release

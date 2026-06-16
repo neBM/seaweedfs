@@ -11,7 +11,16 @@ workflow:
 
 stages:
   - verify
+  - build
   - integration
+
+variables:
+  # Shared prebuilt CI image with Go and the base build dependencies needed by
+  # the rust-volume jobs. rustup is only installed once in build:rust-volume.
+  ACT_IMAGE: ${CI_REGISTRY}/ben/act:latest
+  # Prefer the runner-mounted cache, but fall back to repo-local .cache when
+  # the mount is unavailable.
+  SEAWEED_CI_CACHE_ROOT: /ci-cache
 
 default:
   interruptible: true
@@ -87,6 +96,23 @@ verify:fuse-runner-smoke:
   timeout: 20 minutes
   rules: *rules_mount
 
+build:rust-volume:
+  # Produce the Go + Rust binaries once, then hand them to the smoke / fanout
+  # jobs as artifacts so they stop rebuilding the same payload.
+  stage: build
+  image:
+    name: ${ACT_IMAGE}
+    pull_policy: always
+  script:
+    - bash scripts/ci/build-rust-volume-artifacts.sh
+  artifacts:
+    paths:
+      - weed/weed
+      - seaweed-volume/target/release/weed-volume
+    expire_in: 7 days
+  timeout: 30 minutes
+  rules: *rules_rust_volume
+
 integration:fuse:
   stage: integration
   image: golang:1.25-bookworm
@@ -117,11 +143,12 @@ integration:rust-volume:unit:
 
 integration:rust-volume:smoke:
   stage: integration
-  image: rust:1.91.1-bookworm
-  before_script:
-    - mkdir -p .artifacts/ci-logs
-    - bash scripts/ci/install-rust-deps.sh
-    - bash scripts/ci/install-go-toolchain.sh
+  image:
+    name: ${ACT_IMAGE}
+    pull_policy: always
+  needs:
+    - job: build:rust-volume
+      artifacts: true
   script:
     - bash scripts/ci/run-rust-volume-integration.sh
   artifacts: *fuse_artifacts
@@ -130,15 +157,16 @@ integration:rust-volume:smoke:
 
 integration:rust-volume:go:
   stage: integration
-  image: rust:1.91.1-bookworm
+  image:
+    name: ${ACT_IMAGE}
+    pull_policy: always
   parallel:
     matrix:
       - TEST_TYPE: ["grpc", "http"]
         SHARD: ["1", "2", "3"]
-  before_script:
-    - mkdir -p .artifacts/ci-logs
-    - bash scripts/ci/install-rust-deps.sh
-    - bash scripts/ci/install-go-toolchain.sh
+  needs:
+    - job: build:rust-volume
+      artifacts: true
   script:
     - bash scripts/ci/run-rust-volume-go-shard.sh "$TEST_TYPE" "$SHARD"
   artifacts: *fuse_artifacts
